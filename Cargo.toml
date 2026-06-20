@@ -13,6 +13,7 @@ path = "src/main.rs"
 [dependencies]
 ratatui = "0.30.2"
 chrono = "0.4.45"
+shell-words = "1.1.1"
 
 [profile.release]
 opt-level = "z"

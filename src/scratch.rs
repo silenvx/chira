@@ -162,12 +162,19 @@ pub fn rename(entry: &Entry, new_name: &str) -> io::Result<PathBuf> {
     if dest == entry.path {
         return Ok(dest); // 同名への改名は no-op
     }
-    // 既存エントリを無確認で上書きしないよう存在チェックする
-    if dest.exists() {
-        return Err(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            "同名のエントリが既に存在します",
-        ));
+    // exists() は壊れた symlink を見逃すため symlink_metadata で既存エントリ(壊れた symlink 含む)の上書きを防ぐ。
+    // ただし case-insensitive FS での同一ファイルへの case 変更 (note.md→Note.md) は衝突でないため許可する。
+    if dest.symlink_metadata().is_ok() {
+        let same_file = match (dest.canonicalize(), entry.path.canonicalize()) {
+            (Ok(a), Ok(b)) => a == b,
+            _ => false,
+        };
+        if !same_file {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "同名のエントリが既に存在します",
+            ));
+        }
     }
     fs::rename(&entry.path, &dest)?;
     Ok(dest)
@@ -225,6 +232,18 @@ mod tests {
         assert!(root.join("a.md").exists());
         // 同名への改名は no-op で成功する
         assert!(rename(&a, "a.md").is_ok());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn rename_rejects_broken_symlink_dest() {
+        let root = temp_root();
+        create_file(&root, "f.md").unwrap();
+        std::os::unix::fs::symlink("/nonexistent/x", root.join("broken")).unwrap();
+        let f = list(&root).unwrap().into_iter().find(|e| e.name == "f.md").unwrap();
+        // 壊れた symlink も一覧に出る既存エントリなので無確認上書きしない (exists() はすり抜ける)
+        assert!(rename(&f, "broken").is_err());
+        assert!(root.join("f.md").exists());
         fs::remove_dir_all(&root).unwrap();
     }
 

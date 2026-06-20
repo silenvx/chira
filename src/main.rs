@@ -116,15 +116,21 @@ fn run_external(terminal: &mut DefaultTerminal, pending: &Pending) -> io::Result
     result
 }
 
+/// $EDITOR を shell の語分割規則 (shell-words) で argv に分解する。
+/// 引数付き (`code --wait`) と quote 済みスペース入りパス (`'/My Apps/subl' -w`) の両方を扱う (whitespace split は後者を壊す)。
+fn editor_argv(editor: &str) -> io::Result<Vec<String>> {
+    let argv = shell_words::split(editor)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, format!("$EDITOR の解析に失敗: {e}")))?;
+    if argv.is_empty() {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "$EDITOR が空です"));
+    }
+    Ok(argv)
+}
+
 fn spawn_editor(path: &Path) -> io::Result<()> {
     let editor = env::var("EDITOR").unwrap_or_else(|_| "vi".into());
-    // `EDITOR="code --wait"` のように引数を含む値を受け付ける
-    // (Command::new に文字列全体を渡すと実行ファイル名扱いで NotFound になる)
-    let mut parts = editor.split_whitespace();
-    let bin = parts
-        .next()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "$EDITOR が空です"))?;
-    Command::new(bin).args(parts).arg(path).status()?;
+    let argv = editor_argv(&editor)?;
+    Command::new(&argv[0]).args(&argv[1..]).arg(path).status()?;
     Ok(())
 }
 
@@ -132,4 +138,18 @@ fn spawn_shell(dir: &Path) -> io::Result<()> {
     let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
     Command::new(shell).current_dir(dir).status()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn editor_argv_handles_args_and_quoted_paths() {
+        assert_eq!(editor_argv("vi").unwrap(), ["vi"]);
+        assert_eq!(editor_argv("code --wait").unwrap(), ["code", "--wait"]);
+        // quote 済みのスペース入りパスは 1 引数として保たれる
+        assert_eq!(editor_argv("'/My Apps/subl' -w").unwrap(), ["/My Apps/subl", "-w"]);
+        assert!(editor_argv("").is_err());
+    }
 }

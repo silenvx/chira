@@ -561,4 +561,22 @@ mod tests {
 
         std::fs::remove_dir_all(&root).unwrap();
     }
+
+    #[test]
+    fn preview_skips_non_regular_file() {
+        let root = temp_root();
+        let fifo = root.join("pipe");
+        // FIFO を作る (mkfifo 不在の環境ではスキップ)。read すると main thread がブロックするため
+        // preview_file は通常ファイル以外を read しないことを確認する
+        let Ok(status) = std::process::Command::new("mkfifo").arg(&fifo).status() else {
+            std::fs::remove_dir_all(&root).unwrap();
+            return;
+        };
+        if !status.success() {
+            std::fs::remove_dir_all(&root).unwrap();
+            return;
+        }
+        assert!(preview_file(&fifo).contains("特殊ファイル"));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 }

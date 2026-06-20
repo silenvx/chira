@@ -1,0 +1,20 @@
+[package]
+name = "scrap"
+version = "0.1.0"
+edition = "2024"
+description = "一時的な scratch ディレクトリを素早く管理する TUI ツール"
+license = "MIT"
+repository = "https://github.com/silenvx/scrap"
+
+[[bin]]
+name = "scrap"
+path = "src/main.rs"
+
+[dependencies]
+ratatui = "0.30.2"
+chrono = "0.4.45"
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true

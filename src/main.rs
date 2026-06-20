@@ -1,0 +1,125 @@
+mod app;
+mod scratch;
+mod ui;
+
+use std::env;
+use std::fs;
+use std::io;
+use std::os::unix::ffi::OsStrExt;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::time::Duration;
+
+use ratatui::DefaultTerminal;
+use ratatui::crossterm::event::{self, Event};
+use ratatui::crossterm::execute;
+use ratatui::crossterm::terminal::{
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+};
+
+use app::{App, Pending};
+
+const USAGE: &str = "\
+scrap — 一時的な scratch ディレクトリを管理する TUI
+
+usage: scrap [--cd-file <path>]
+
+  --cd-file <path>   終了時に最終ディレクトリを <path> へ書き出す
+                     (シェル関数で cd するための連携用。README 参照)
+  -h, --help         このヘルプを表示
+";
+
+fn main() -> io::Result<()> {
+    let cd_file = match parse_args() {
+        Ok(v) => v,
+        Err(msg) => {
+            eprint!("{msg}");
+            std::process::exit(2);
+        }
+    };
+
+    let mut app = App::new()?;
+    let mut terminal = ratatui::init();
+    let result = run(&mut terminal, &mut app);
+    ratatui::restore();
+    result?;
+
+    // 起動元シェルが cd するための最終ディレクトリを書き出す
+    if let Some(path) = cd_file {
+        fs::write(path, app.cwd.as_os_str().as_bytes())?;
+    }
+    Ok(())
+}
+
+/// `--cd-file <path>` を取り出す。`--help` は usage を表示して終了する。
+fn parse_args() -> Result<Option<PathBuf>, String> {
+    let mut cd_file = None;
+    let mut args = env::args().skip(1);
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "-h" | "--help" => {
+                print!("{USAGE}");
+                std::process::exit(0);
+            }
+            "--cd-file" => {
+                let path = args
+                    .next()
+                    .ok_or_else(|| "--cd-file には引数が必要です\n".to_string())?;
+                cd_file = Some(PathBuf::from(path));
+            }
+            other => {
+                if let Some(path) = other.strip_prefix("--cd-file=") {
+                    cd_file = Some(PathBuf::from(path));
+                } else {
+                    return Err(format!("不明な引数: {other}\n{USAGE}"));
+                }
+            }
+        }
+    }
+    Ok(cd_file)
+}
+
+fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
+    while !app.should_quit {
+        terminal.draw(|frame| ui::render(frame, app))?;
+        if event::poll(Duration::from_millis(250))?
+            && let Event::Key(key) = event::read()?
+        {
+            app.on_key(key);
+        }
+        if let Some(pending) = app.pending.take() {
+            run_external(terminal, &pending)?;
+            // 外部プロセス (shell での agent 実行等) が作ったファイルを取り込む
+            app.refresh();
+        }
+    }
+    Ok(())
+}
+
+/// TUI から一旦抜けて外部プロセスを前面で実行し、終了後に TUI へ復帰する
+fn run_external(terminal: &mut DefaultTerminal, pending: &Pending) -> io::Result<()> {
+    disable_raw_mode()?;
+    execute!(io::stdout(), LeaveAlternateScreen)?;
+
+    let result = match pending {
+        Pending::Editor(path) => spawn_editor(path),
+        Pending::Shell(dir) => spawn_shell(dir),
+    };
+
+    enable_raw_mode()?;
+    execute!(io::stdout(), EnterAlternateScreen)?;
+    terminal.clear()?;
+    result
+}
+
+fn spawn_editor(path: &Path) -> io::Result<()> {
+    let editor = env::var("EDITOR").unwrap_or_else(|_| "vi".into());
+    Command::new(editor).arg(path).status()?;
+    Ok(())
+}
+
+fn spawn_shell(dir: &Path) -> io::Result<()> {
+    let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
+    Command::new(shell).current_dir(dir).status()?;
+    Ok(())
+}

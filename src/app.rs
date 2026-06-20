@@ -226,7 +226,8 @@ impl App {
 
     fn on_key_confirm(&mut self, key: KeyEvent) {
         match key.code {
-            KeyCode::Char('y') | KeyCode::Enter => {
+            // 削除確定は明示的な y のみ (Enter は誤削除防止のためキャンセル扱い)
+            KeyCode::Char('y') => {
                 if let Some(entry) = self.selected_entry().cloned() {
                     match scratch::remove(&entry) {
                         Ok(()) => self.status = format!("削除しました: {}", entry.name),
@@ -295,9 +296,12 @@ impl App {
         let name = self.input.trim().to_string();
         self.input.clear();
         self.mode = Mode::Browse;
+        // 検索フィルタ中でも作成/改名した項目を選択できるよう、成功時は検索を解除する
+        // (select_by_name は visible() を見るため、フィルタが残ると新項目を選べない)
         match kind {
             InputKind::NewFile => match scratch::create_file(&self.cwd, &name) {
                 Ok(path) => {
+                    self.search.clear();
                     self.refresh();
                     self.select_by_name(&name);
                     // 作成直後にそのまま $EDITOR で開く
@@ -307,6 +311,7 @@ impl App {
             },
             InputKind::NewDir => match scratch::create_dir(&self.cwd, &name) {
                 Ok(_) => {
+                    self.search.clear();
                     self.refresh();
                     self.select_by_name(&name);
                     self.status = format!("作成しました: {name}/");
@@ -317,6 +322,7 @@ impl App {
                 if let Some(entry) = self.selected_entry().cloned() {
                     match scratch::rename(&entry, &name) {
                         Ok(_) => {
+                            self.search.clear();
                             self.refresh();
                             self.select_by_name(&name);
                             self.status = "名前を変更しました".into();
@@ -342,6 +348,9 @@ impl App {
 
 fn preview_file(path: &Path) -> String {
     match std::fs::metadata(path) {
+        // 通常ファイル以外 (FIFO はメインスレッドの read をブロックし、
+        // キャラクタデバイスは len==0 で無限読み→OOM になる) は読まない
+        Ok(m) if !m.is_file() => "(特殊ファイル: プレビュー不可)".into(),
         Ok(m) if m.len() > PREVIEW_MAX_BYTES => format!("(大きいファイル: {} bytes)", m.len()),
         Ok(_) => match scratch::read_text(path) {
             Ok(text) => text,
@@ -512,6 +521,62 @@ mod tests {
         assert_eq!(app.visible().len(), 1);
         assert_eq!(app.entries[app.visible()[0]].name, "alpha.md");
 
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn create_while_filtering_clears_search_and_selects_new() {
+        let root = temp_root();
+        scratch::create_file(&root, "alpha.md").unwrap();
+        let mut app = App::with_root(root.clone());
+
+        // "alp" で絞り込み確定 (Enter で Browse に戻るがフィルタは残る) → 一致しない名前で新規作成
+        app.on_key(key('/'));
+        typed(&mut app, "alp");
+        app.on_key(special(KeyCode::Enter));
+        assert_eq!(app.search, "alp");
+        app.on_key(key('n'));
+        app.input.clear();
+        typed(&mut app, "report.md");
+        app.on_key(special(KeyCode::Enter));
+
+        assert!(app.search.is_empty());
+        assert_eq!(app.selected_entry().map(|e| e.name.as_str()), Some("report.md"));
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn enter_cancels_delete_confirm() {
+        let root = temp_root();
+        scratch::create_file(&root, "keep.md").unwrap();
+        let mut app = App::with_root(root.clone());
+
+        app.on_key(key('d'));
+        assert_eq!(app.mode, Mode::ConfirmDelete);
+        // Enter は削除せずキャンセル (誤削除防止)
+        app.on_key(special(KeyCode::Enter));
+        assert_eq!(app.mode, Mode::Browse);
+        assert!(root.join("keep.md").exists());
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn preview_skips_non_regular_file() {
+        let root = temp_root();
+        let fifo = root.join("pipe");
+        // FIFO を作る (mkfifo 不在の環境ではスキップ)。read すると main thread がブロックするため
+        // preview_file は通常ファイル以外を read しないことを確認する
+        let Ok(status) = std::process::Command::new("mkfifo").arg(&fifo).status() else {
+            std::fs::remove_dir_all(&root).unwrap();
+            return;
+        };
+        if !status.success() {
+            std::fs::remove_dir_all(&root).unwrap();
+            return;
+        }
+        assert!(preview_file(&fifo).contains("特殊ファイル"));
         std::fs::remove_dir_all(&root).unwrap();
     }
 }

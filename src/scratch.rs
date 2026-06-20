@@ -1,6 +1,7 @@
 use std::env;
 use std::fs;
 use std::io;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -45,12 +46,18 @@ fn read_entries(dir: &Path) -> io::Result<Vec<Entry>> {
         if name.starts_with('.') {
             continue;
         }
-        let meta = dirent.metadata()?;
+        // 壊れた symlink 等で metadata が失敗しても listing 全体を巻き込まないよう
+        // エントリ単位でフォールバックする (`?` で一覧ごと空にしない)
+        let meta = dirent.metadata();
+        let is_dir = meta.as_ref().map(|m| m.is_dir()).unwrap_or(false);
+        let modified = meta
+            .and_then(|m| m.modified())
+            .unwrap_or(SystemTime::UNIX_EPOCH);
         entries.push(Entry {
             path: dirent.path(),
             name,
-            is_dir: meta.is_dir(),
-            modified: meta.modified().unwrap_or(SystemTime::UNIX_EPOCH),
+            is_dir,
+            modified,
         });
     }
     Ok(entries)
@@ -116,9 +123,10 @@ fn build_tree(
     }
 }
 
-/// name の安全性 (パストラバーサル防止)。空・`/` 含み・`.`/`..` を拒否する。
+/// name の安全性。空・`/` 含み・先頭 `.` を拒否する。
+/// 先頭 `.` 拒否は隠しファイル一覧除外との整合で、作成できるが一覧に出ないゴースト化も防ぐ。
 fn validate_name(name: &str) -> io::Result<()> {
-    if name.is_empty() || name.contains('/') || name == "." || name == ".." {
+    if name.is_empty() || name.contains('/') || name.starts_with('.') {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "不正な名前です",
@@ -152,6 +160,24 @@ pub fn rename(entry: &Entry, new_name: &str) -> io::Result<PathBuf> {
         .parent()
         .ok_or_else(|| io::Error::other("親ディレクトリを特定できません"))?;
     let dest = parent.join(new_name);
+    if dest == entry.path {
+        return Ok(dest); // 同名への改名は no-op
+    }
+    // 既存 directory entry (壊れた/別実体への symlink 含む) の無確認上書きを防ぐ。symlink を辿らない
+    // lstat の dev+ino 比較なので、同一エントリへの case 変更 (note.md→Note.md) だけ許可し別 entry は衝突。
+    if let Ok(dest_meta) = dest.symlink_metadata() {
+        let same_entry = entry
+            .path
+            .symlink_metadata()
+            .map(|m| (m.dev(), m.ino()) == (dest_meta.dev(), dest_meta.ino()))
+            .unwrap_or(false);
+        if !same_entry {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "同名のエントリが既に存在します",
+            ));
+        }
+    }
     fs::rename(&entry.path, &dest)?;
     Ok(dest)
 }
@@ -189,8 +215,64 @@ mod tests {
         assert!(validate_name("").is_err());
         assert!(validate_name("a/b").is_err());
         assert!(validate_name("..").is_err());
+        assert!(validate_name(".").is_err());
+        // 先頭ドット名は read_entries の隠しファイル除外と整合させ拒否する
+        assert!(validate_name(".hidden").is_err());
+        assert!(validate_name(".notes.md").is_err());
         assert!(validate_name("ok.md").is_ok());
         assert!(validate_name("日本語メモ").is_ok());
+    }
+
+    #[test]
+    fn rename_rejects_existing_dest() {
+        let root = temp_root();
+        create_file(&root, "a.md").unwrap();
+        create_file(&root, "b.md").unwrap();
+        let a = list(&root).unwrap().into_iter().find(|e| e.name == "a.md").unwrap();
+        // 既存の b.md を無確認上書きせずエラーにする
+        assert!(rename(&a, "b.md").is_err());
+        assert!(root.join("a.md").exists());
+        // 同名への改名は no-op で成功する
+        assert!(rename(&a, "a.md").is_ok());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn rename_rejects_broken_symlink_dest() {
+        let root = temp_root();
+        create_file(&root, "f.md").unwrap();
+        std::os::unix::fs::symlink("/nonexistent/x", root.join("broken")).unwrap();
+        let f = list(&root).unwrap().into_iter().find(|e| e.name == "f.md").unwrap();
+        // 壊れた symlink も一覧に出る既存エントリなので無確認上書きしない (exists() はすり抜ける)
+        assert!(rename(&f, "broken").is_err());
+        assert!(root.join("f.md").exists());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn rename_rejects_symlink_to_source_dest() {
+        let root = temp_root();
+        create_file(&root, "a.md").unwrap();
+        // a.md を指す (非 broken) symlink。canonicalize なら同一実体だが別 directory entry
+        std::os::unix::fs::symlink(root.join("a.md"), root.join("alias")).unwrap();
+        let a = list(&root).unwrap().into_iter().find(|e| e.name == "a.md").unwrap();
+        // a.md→alias は別エントリ (symlink) の上書きなので拒否し、a.md を消さない
+        assert!(rename(&a, "alias").is_err());
+        assert!(root.join("a.md").exists());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn list_survives_broken_symlink() {
+        let root = temp_root();
+        create_file(&root, "ok.md").unwrap();
+        std::os::unix::fs::symlink("/nonexistent/target", root.join("broken")).unwrap();
+        // 壊れた symlink があっても一覧全体が空にならず、両エントリが出る
+        let listed = list(&root).unwrap();
+        assert_eq!(listed.len(), 2);
+        assert!(listed.iter().any(|e| e.name == "ok.md"));
+        assert!(listed.iter().any(|e| e.name == "broken" && !e.is_dir));
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
@@ -256,7 +338,8 @@ mod tests {
     #[test]
     fn list_excludes_hidden_and_sorts_newest_first() {
         let root = temp_root();
-        create_file(&root, ".hidden").unwrap();
+        // 隠しファイルは validate_name が作成を拒否するため、外部作成を模して fs で直接置く
+        fs::write(root.join(".hidden"), b"").unwrap();
         let old = create_file(&root, "old.md").unwrap();
         // old を確実に過去の mtime にしてから new を作る
         std::thread::sleep(Duration::from_millis(10));

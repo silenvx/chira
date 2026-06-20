@@ -1,6 +1,7 @@
 use std::env;
 use std::fs;
 use std::io;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -162,14 +163,15 @@ pub fn rename(entry: &Entry, new_name: &str) -> io::Result<PathBuf> {
     if dest == entry.path {
         return Ok(dest); // 同名への改名は no-op
     }
-    // exists() は壊れた symlink を見逃すため symlink_metadata で既存エントリ(壊れた symlink 含む)の上書きを防ぐ。
-    // ただし case-insensitive FS での同一ファイルへの case 変更 (note.md→Note.md) は衝突でないため許可する。
-    if dest.symlink_metadata().is_ok() {
-        let same_file = match (dest.canonicalize(), entry.path.canonicalize()) {
-            (Ok(a), Ok(b)) => a == b,
-            _ => false,
-        };
-        if !same_file {
+    // 既存 directory entry (壊れた/別実体への symlink 含む) の無確認上書きを防ぐ。symlink を辿らない
+    // lstat の dev+ino 比較なので、同一エントリへの case 変更 (note.md→Note.md) だけ許可し別 entry は衝突。
+    if let Ok(dest_meta) = dest.symlink_metadata() {
+        let same_entry = entry
+            .path
+            .symlink_metadata()
+            .map(|m| (m.dev(), m.ino()) == (dest_meta.dev(), dest_meta.ino()))
+            .unwrap_or(false);
+        if !same_entry {
             return Err(io::Error::new(
                 io::ErrorKind::AlreadyExists,
                 "同名のエントリが既に存在します",
@@ -244,6 +246,19 @@ mod tests {
         // 壊れた symlink も一覧に出る既存エントリなので無確認上書きしない (exists() はすり抜ける)
         assert!(rename(&f, "broken").is_err());
         assert!(root.join("f.md").exists());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn rename_rejects_symlink_to_source_dest() {
+        let root = temp_root();
+        create_file(&root, "a.md").unwrap();
+        // a.md を指す (非 broken) symlink。canonicalize なら同一実体だが別 directory entry
+        std::os::unix::fs::symlink(root.join("a.md"), root.join("alias")).unwrap();
+        let a = list(&root).unwrap().into_iter().find(|e| e.name == "a.md").unwrap();
+        // a.md→alias は別エントリ (symlink) の上書きなので拒否し、a.md を消さない
+        assert!(rename(&a, "alias").is_err());
+        assert!(root.join("a.md").exists());
         fs::remove_dir_all(&root).unwrap();
     }
 

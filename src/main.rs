@@ -88,7 +88,11 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
             app.on_key(key);
         }
         if let Some(pending) = app.pending.take() {
-            run_external(terminal, &pending)?;
+            // 起動失敗 ($EDITOR/$SHELL 不在・対象ディレクトリ消失等) は回復可能なので
+            // TUI を落とさず status に出して継続する
+            if let Err(e) = run_external(terminal, &pending) {
+                app.status = format!("外部プロセスの起動に失敗: {e}");
+            }
             // 外部プロセス (shell での agent 実行等) が作ったファイルを取り込む
             app.refresh();
         }
@@ -114,7 +118,13 @@ fn run_external(terminal: &mut DefaultTerminal, pending: &Pending) -> io::Result
 
 fn spawn_editor(path: &Path) -> io::Result<()> {
     let editor = env::var("EDITOR").unwrap_or_else(|_| "vi".into());
-    Command::new(editor).arg(path).status()?;
+    // `EDITOR="code --wait"` のように引数を含む値を受け付ける
+    // (Command::new に文字列全体を渡すと実行ファイル名扱いで NotFound になる)
+    let mut parts = editor.split_whitespace();
+    let bin = parts
+        .next()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "$EDITOR が空です"))?;
+    Command::new(bin).args(parts).arg(path).status()?;
     Ok(())
 }
 

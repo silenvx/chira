@@ -14,26 +14,41 @@ pub fn lang() -> Lang {
 }
 
 /// 環境変数から表示言語を決定する。優先順位:
-/// 1. `CHIRA_LANG` (明示的な override。値は `en` / `ja` を許容、未知値は無視)
+/// 1. `CHIRA_LANG` (明示的な override。case-insensitive で `ja` / `ja_jp` / `japanese`
+///    → Ja、`en` / `en_us` / `english` → En。それ以外の値は無視して locale へフォールバック)
 /// 2. POSIX locale: `LC_ALL` → `LC_MESSAGES` → `LANG`、`ja*` で Ja、他は En
 /// 3. いずれも未設定なら En (global 公開向けの default)
 fn detect_lang() -> Lang {
-    if let Ok(v) = env::var("CHIRA_LANG") {
+    resolve_lang(
+        env::var("CHIRA_LANG").ok().as_deref(),
+        env::var("LC_ALL").ok().as_deref(),
+        env::var("LC_MESSAGES").ok().as_deref(),
+        env::var("LANG").ok().as_deref(),
+    )
+}
+
+/// detect_lang() のロジックを env から分離した純粋関数。production / test 双方から呼ぶ。
+fn resolve_lang(
+    chira_lang: Option<&str>,
+    lc_all: Option<&str>,
+    lc_messages: Option<&str>,
+    lang_env: Option<&str>,
+) -> Lang {
+    if let Some(v) = chira_lang {
         match v.to_lowercase().as_str() {
             "ja" | "ja_jp" | "japanese" => return Lang::Ja,
             "en" | "en_us" | "english" => return Lang::En,
             _ => {}
         }
     }
-    for key in ["LC_ALL", "LC_MESSAGES", "LANG"] {
-        if let Ok(v) = env::var(key)
-            && !v.is_empty()
-        {
-            if v.to_lowercase().starts_with("ja") {
-                return Lang::Ja;
-            }
-            return Lang::En;
+    for v in [lc_all, lc_messages, lang_env].into_iter().flatten() {
+        if v.is_empty() {
+            continue;
         }
+        if v.to_lowercase().starts_with("ja") {
+            return Lang::Ja;
+        }
+        return Lang::En;
     }
     Lang::En
 }
@@ -83,6 +98,20 @@ pub fn err_external_launch(lang: Lang, e: &dyn std::fmt::Display) -> String {
     match lang {
         Lang::Ja => format!("外部プロセスの起動に失敗: {e}"),
         Lang::En => format!("Failed to launch external process: {e}"),
+    }
+}
+
+pub fn err_editor_parse(lang: Lang, e: &dyn std::fmt::Display) -> String {
+    match lang {
+        Lang::Ja => format!("$EDITOR の解析に失敗: {e}"),
+        Lang::En => format!("failed to parse $EDITOR: {e}"),
+    }
+}
+
+pub fn err_editor_empty(lang: Lang) -> &'static str {
+    match lang {
+        Lang::Ja => "$EDITOR が空です",
+        Lang::En => "$EDITOR is empty",
     }
 }
 
@@ -354,52 +383,38 @@ pub fn footer_help_close(lang: Lang) -> &'static str {
 mod tests {
     use super::*;
 
-    fn lang_with_env(
-        chira_lang: Option<&str>,
-        lc_all: Option<&str>,
-        lc_messages: Option<&str>,
-        lang_env: Option<&str>,
-    ) -> Lang {
-        // detect_lang() の純粋ロジックを再現 (env 直書き換えは並列 test で race するため避ける)
-        if let Some(v) = chira_lang {
-            match v.to_lowercase().as_str() {
-                "ja" | "ja_jp" | "japanese" => return Lang::Ja,
-                "en" | "en_us" | "english" => return Lang::En,
-                _ => {}
-            }
-        }
-        for v in [lc_all, lc_messages, lang_env].into_iter().flatten() {
-            if v.is_empty() {
-                continue;
-            }
-            if v.to_lowercase().starts_with("ja") {
-                return Lang::Ja;
-            }
-            return Lang::En;
-        }
-        Lang::En
-    }
-
     #[test]
     fn chira_lang_override_wins() {
         assert_eq!(
-            lang_with_env(Some("ja"), Some("en_US.UTF-8"), None, None),
+            resolve_lang(Some("ja"), Some("en_US.UTF-8"), None, None),
             Lang::Ja
         );
         assert_eq!(
-            lang_with_env(Some("en"), Some("ja_JP.UTF-8"), None, None),
+            resolve_lang(Some("en"), Some("ja_JP.UTF-8"), None, None),
             Lang::En
         );
     }
 
     #[test]
+    fn chira_lang_aliases_and_case_insensitive() {
+        // ja / ja_jp / japanese / case-insensitive すべて Ja
+        assert_eq!(resolve_lang(Some("JA"), None, None, None), Lang::Ja);
+        assert_eq!(resolve_lang(Some("ja_JP"), None, None, None), Lang::Ja);
+        assert_eq!(resolve_lang(Some("Japanese"), None, None, None), Lang::Ja);
+        // en / en_us / english すべて En
+        assert_eq!(resolve_lang(Some("EN"), None, None, None), Lang::En);
+        assert_eq!(resolve_lang(Some("en_US"), None, None, None), Lang::En);
+        assert_eq!(resolve_lang(Some("English"), None, None, None), Lang::En);
+    }
+
+    #[test]
     fn chira_lang_unknown_falls_back_to_locale() {
         assert_eq!(
-            lang_with_env(Some("xx"), Some("ja_JP.UTF-8"), None, None),
+            resolve_lang(Some("xx"), Some("ja_JP.UTF-8"), None, None),
             Lang::Ja
         );
         assert_eq!(
-            lang_with_env(Some(""), Some("ja_JP.UTF-8"), None, None),
+            resolve_lang(Some(""), Some("ja_JP.UTF-8"), None, None),
             Lang::Ja
         );
     }
@@ -407,11 +422,11 @@ mod tests {
     #[test]
     fn locale_precedence_lc_all_first() {
         assert_eq!(
-            lang_with_env(None, Some("ja_JP.UTF-8"), Some("en_US"), Some("en_US")),
+            resolve_lang(None, Some("ja_JP.UTF-8"), Some("en_US"), Some("en_US")),
             Lang::Ja
         );
         assert_eq!(
-            lang_with_env(None, Some("en_US.UTF-8"), Some("ja_JP"), Some("ja_JP")),
+            resolve_lang(None, Some("en_US.UTF-8"), Some("ja_JP"), Some("ja_JP")),
             Lang::En
         );
     }
@@ -419,19 +434,19 @@ mod tests {
     #[test]
     fn empty_locale_skipped() {
         assert_eq!(
-            lang_with_env(None, Some(""), Some("ja_JP.UTF-8"), None),
+            resolve_lang(None, Some(""), Some("ja_JP.UTF-8"), None),
             Lang::Ja
         );
     }
 
     #[test]
     fn default_when_nothing_set() {
-        assert_eq!(lang_with_env(None, None, None, None), Lang::En);
+        assert_eq!(resolve_lang(None, None, None, None), Lang::En);
     }
 
     #[test]
     fn c_or_posix_treated_as_en() {
-        assert_eq!(lang_with_env(None, Some("C"), None, None), Lang::En);
-        assert_eq!(lang_with_env(None, Some("POSIX"), None, None), Lang::En);
+        assert_eq!(resolve_lang(None, Some("C"), None, None), Lang::En);
+        assert_eq!(resolve_lang(None, Some("POSIX"), None, None), Lang::En);
     }
 }

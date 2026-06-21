@@ -1,13 +1,13 @@
 [package]
-name = "scrap"
+name = "chira"
 version = "0.1.0"
 edition = "2024"
 description = "一時的な scratch ディレクトリを素早く管理する TUI ツール"
 license = "MIT"
-repository = "https://github.com/silenvx/scrap"
+repository = "https://github.com/silenvx/chira"
 
 [[bin]]
-name = "scrap"
+name = "chira"
 path = "src/main.rs"
 
 [dependencies]

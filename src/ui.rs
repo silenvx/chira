@@ -30,7 +30,7 @@ pub fn render(frame: &mut Frame, app: &App) {
 
 fn render_header(frame: &mut Frame, app: &App, area: Rect) {
     let mut spans = vec![
-        Span::styled(" scrap ", Style::new().bg(Color::Cyan).fg(Color::Black).bold()),
+        Span::styled(" chira ", Style::new().bg(Color::Cyan).fg(Color::Black).bold()),
         Span::raw(format!(" {}  ", app.rel_path())),
         Span::styled(format!("{} 件", app.visible().len()), Style::new().fg(Color::Gray)),
     ];

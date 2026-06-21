@@ -70,8 +70,8 @@ impl App {
     /// cwd を相対表示用に root からの相対パスへ変換する
     pub fn rel_path(&self) -> String {
         match self.cwd.strip_prefix(&self.root) {
-            Ok(p) if p.as_os_str().is_empty() => "scrap".into(),
-            Ok(p) => format!("scrap/{}", p.display()),
+            Ok(p) if p.as_os_str().is_empty() => "chira".into(),
+            Ok(p) => format!("chira/{}", p.display()),
             Err(_) => self.cwd.display().to_string(),
         }
     }
@@ -369,7 +369,7 @@ mod tests {
     fn temp_root() -> PathBuf {
         static COUNTER: AtomicU32 = AtomicU32::new(0);
         let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!("scrap-app-{}-{}", std::process::id(), n));
+        let dir = std::env::temp_dir().join(format!("chira-app-{}-{}", std::process::id(), n));
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }

@@ -119,10 +119,17 @@ fn run_external(terminal: &mut DefaultTerminal, pending: &Pending) -> io::Result
 /// $EDITOR を shell の語分割規則 (shell-words) で argv に分解する。
 /// 引数付き (`code --wait`) と quote 済みスペース入りパス (`'/My Apps/subl' -w`) の両方を扱う (whitespace split は後者を壊す)。
 fn editor_argv(editor: &str) -> io::Result<Vec<String>> {
-    let argv = shell_words::split(editor)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, format!("$EDITOR の解析に失敗: {e}")))?;
+    let argv = shell_words::split(editor).map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("$EDITOR の解析に失敗: {e}"),
+        )
+    })?;
     if argv.is_empty() {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "$EDITOR が空です"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "$EDITOR が空です",
+        ));
     }
     Ok(argv)
 }
@@ -149,7 +156,10 @@ mod tests {
         assert_eq!(editor_argv("vi").unwrap(), ["vi"]);
         assert_eq!(editor_argv("code --wait").unwrap(), ["code", "--wait"]);
         // quote 済みのスペース入りパスは 1 引数として保たれる
-        assert_eq!(editor_argv("'/My Apps/subl' -w").unwrap(), ["/My Apps/subl", "-w"]);
+        assert_eq!(
+            editor_argv("'/My Apps/subl' -w").unwrap(),
+            ["/My Apps/subl", "-w"]
+        );
         assert!(editor_argv("").is_err());
     }
 }

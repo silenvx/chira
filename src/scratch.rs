@@ -66,7 +66,7 @@ fn read_entries(dir: &Path) -> io::Result<Vec<Entry>> {
 /// dir 直下のエントリを更新が新しい順に返す (一覧表示用)。
 pub fn list(dir: &Path) -> io::Result<Vec<Entry>> {
     let mut entries = read_entries(dir)?;
-    entries.sort_by(|a, b| b.modified.cmp(&a.modified));
+    entries.sort_by_key(|e| std::cmp::Reverse(e.modified));
     Ok(entries)
 }
 
@@ -118,7 +118,14 @@ fn build_tree(
         *lines += 1;
         if entry.is_dir && depth_left > 1 {
             let child_prefix = format!("{prefix}{}", if is_last { "    " } else { "│   " });
-            build_tree(&entry.path, &child_prefix, depth_left - 1, max_lines, lines, out);
+            build_tree(
+                &entry.path,
+                &child_prefix,
+                depth_left - 1,
+                max_lines,
+                lines,
+                out,
+            );
         }
     }
 }
@@ -228,7 +235,11 @@ mod tests {
         let root = temp_root();
         create_file(&root, "a.md").unwrap();
         create_file(&root, "b.md").unwrap();
-        let a = list(&root).unwrap().into_iter().find(|e| e.name == "a.md").unwrap();
+        let a = list(&root)
+            .unwrap()
+            .into_iter()
+            .find(|e| e.name == "a.md")
+            .unwrap();
         // 既存の b.md を無確認上書きせずエラーにする
         assert!(rename(&a, "b.md").is_err());
         assert!(root.join("a.md").exists());
@@ -242,7 +253,11 @@ mod tests {
         let root = temp_root();
         create_file(&root, "f.md").unwrap();
         std::os::unix::fs::symlink("/nonexistent/x", root.join("broken")).unwrap();
-        let f = list(&root).unwrap().into_iter().find(|e| e.name == "f.md").unwrap();
+        let f = list(&root)
+            .unwrap()
+            .into_iter()
+            .find(|e| e.name == "f.md")
+            .unwrap();
         // 壊れた symlink も一覧に出る既存エントリなので無確認上書きしない (exists() はすり抜ける)
         assert!(rename(&f, "broken").is_err());
         assert!(root.join("f.md").exists());
@@ -255,7 +270,11 @@ mod tests {
         create_file(&root, "a.md").unwrap();
         // a.md を指す (非 broken) symlink。canonicalize なら同一実体だが別 directory entry
         std::os::unix::fs::symlink(root.join("a.md"), root.join("alias")).unwrap();
-        let a = list(&root).unwrap().into_iter().find(|e| e.name == "a.md").unwrap();
+        let a = list(&root)
+            .unwrap()
+            .into_iter()
+            .find(|e| e.name == "a.md")
+            .unwrap();
         // a.md→alias は別エントリ (symlink) の上書きなので拒否し、a.md を消さない
         assert!(rename(&a, "alias").is_err());
         assert!(root.join("a.md").exists());

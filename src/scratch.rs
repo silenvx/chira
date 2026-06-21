@@ -34,7 +34,7 @@ fn env_path(key: &str) -> Option<PathBuf> {
 }
 
 fn home() -> io::Result<PathBuf> {
-    env_path("HOME").ok_or_else(|| io::Error::other("HOME が設定されていません"))
+    env_path("HOME").ok_or_else(|| io::Error::other("HOME is not set"))
 }
 
 /// dir 直下のエントリを返す (隠しファイルは除外、未ソート)。
@@ -78,12 +78,12 @@ fn children_by_name(dir: &Path) -> io::Result<Vec<Entry>> {
 }
 
 /// dir 配下を `tree` 風に描画する。深さ・行数を制限して巨大ディレクトリでも軽量に保つ。
-pub fn tree(dir: &Path, max_depth: usize, max_lines: usize) -> String {
+pub fn tree(lang: crate::i18n::Lang, dir: &Path, max_depth: usize, max_lines: usize) -> String {
     let mut out = String::new();
     let mut lines = 0usize;
-    build_tree(dir, "", max_depth, max_lines, &mut lines, &mut out);
+    build_tree(lang, dir, "", max_depth, max_lines, &mut lines, &mut out);
     if out.is_empty() {
-        "(空のディレクトリ)".into()
+        crate::i18n::empty_directory(lang).into()
     } else {
         out.truncate(out.trim_end().len());
         out
@@ -91,6 +91,7 @@ pub fn tree(dir: &Path, max_depth: usize, max_lines: usize) -> String {
 }
 
 fn build_tree(
+    lang: crate::i18n::Lang,
     dir: &Path,
     prefix: &str,
     depth_left: usize,
@@ -101,7 +102,10 @@ fn build_tree(
     let entries = match children_by_name(dir) {
         Ok(e) => e,
         Err(e) => {
-            out.push_str(&format!("{prefix}(読み取り不可: {e})\n"));
+            out.push_str(&format!(
+                "{prefix}{}\n",
+                crate::i18n::err_unreadable(lang, &e)
+            ));
             return;
         }
     };
@@ -119,6 +123,7 @@ fn build_tree(
         if entry.is_dir && depth_left > 1 {
             let child_prefix = format!("{prefix}{}", if is_last { "    " } else { "│   " });
             build_tree(
+                lang,
                 &entry.path,
                 &child_prefix,
                 depth_left - 1,
@@ -134,10 +139,7 @@ fn build_tree(
 /// 先頭 `.` 拒否は隠しファイル一覧除外との整合で、作成できるが一覧に出ないゴースト化も防ぐ。
 fn validate_name(name: &str) -> io::Result<()> {
     if name.is_empty() || name.contains('/') || name.starts_with('.') {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "不正な名前です",
-        ));
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid name"));
     }
     Ok(())
 }
@@ -165,7 +167,7 @@ pub fn rename(entry: &Entry, new_name: &str) -> io::Result<PathBuf> {
     let parent = entry
         .path
         .parent()
-        .ok_or_else(|| io::Error::other("親ディレクトリを特定できません"))?;
+        .ok_or_else(|| io::Error::other("could not determine parent directory"))?;
     let dest = parent.join(new_name);
     if dest == entry.path {
         return Ok(dest); // 同名への改名は no-op
@@ -181,7 +183,7 @@ pub fn rename(entry: &Entry, new_name: &str) -> io::Result<PathBuf> {
         if !same_entry {
             return Err(io::Error::new(
                 io::ErrorKind::AlreadyExists,
-                "同名のエントリが既に存在します",
+                "an entry with the same name already exists",
             ));
         }
     }
@@ -334,7 +336,7 @@ mod tests {
         create_file(&ws, "a.txt").unwrap();
         create_file(&root, "b.md").unwrap();
 
-        let t = tree(&root, 4, 100);
+        let t = tree(crate::i18n::Lang::En, &root, 4, 100);
         // ディレクトリ優先 + 名前順で ws/ が先、ネストした a.txt が枝付きで出る
         assert!(t.contains("├── ws/"), "tree:\n{t}");
         assert!(t.contains("│   └── a.txt"), "tree:\n{t}");
@@ -349,8 +351,8 @@ mod tests {
         for i in 0..10 {
             create_file(&root, &format!("f{i:02}.md")).unwrap();
         }
-        let t = tree(&root, 4, 3);
-        assert!(t.contains('…'), "行数上限で省略マークが出る: {t}");
+        let t = tree(crate::i18n::Lang::En, &root, 4, 3);
+        assert!(t.contains('…'), "line cap should emit ellipsis: {t}");
         fs::remove_dir_all(&root).unwrap();
     }
 

@@ -1,4 +1,5 @@
 mod app;
+mod i18n;
 mod scratch;
 mod ui;
 
@@ -19,18 +20,9 @@ use ratatui::crossterm::terminal::{
 
 use app::{App, Pending};
 
-const USAGE: &str = "\
-chira — 一時的な scratch ディレクトリを管理する TUI
-
-usage: chira [--cd-file <path>]
-
-  --cd-file <path>   終了時に最終ディレクトリを <path> へ書き出す
-                     (シェル関数で cd するための連携用。README 参照)
-  -h, --help         このヘルプを表示
-";
-
 fn main() -> io::Result<()> {
-    let cd_file = match parse_args() {
+    let lang = i18n::lang();
+    let cd_file = match parse_args(lang) {
         Ok(v) => v,
         Err(msg) => {
             eprint!("{msg}");
@@ -52,26 +44,26 @@ fn main() -> io::Result<()> {
 }
 
 /// `--cd-file <path>` を取り出す。`--help` は usage を表示して終了する。
-fn parse_args() -> Result<Option<PathBuf>, String> {
+fn parse_args(lang: i18n::Lang) -> Result<Option<PathBuf>, String> {
     let mut cd_file = None;
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "-h" | "--help" => {
-                print!("{USAGE}");
+                print!("{}", i18n::usage(lang));
                 std::process::exit(0);
             }
             "--cd-file" => {
                 let path = args
                     .next()
-                    .ok_or_else(|| "--cd-file には引数が必要です\n".to_string())?;
+                    .ok_or_else(|| i18n::err_cd_file_needs_arg(lang).to_string())?;
                 cd_file = Some(PathBuf::from(path));
             }
             other => {
                 if let Some(path) = other.strip_prefix("--cd-file=") {
                     cd_file = Some(PathBuf::from(path));
                 } else {
-                    return Err(format!("不明な引数: {other}\n{USAGE}"));
+                    return Err(i18n::err_unknown_arg(lang, other));
                 }
             }
         }
@@ -91,7 +83,7 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
             // 起動失敗 ($EDITOR/$SHELL 不在・対象ディレクトリ消失等) は回復可能なので
             // TUI を落とさず status に出して継続する
             if let Err(e) = run_external(terminal, &pending) {
-                app.status = format!("外部プロセスの起動に失敗: {e}");
+                app.status = i18n::err_external_launch(app.lang, &e);
             }
             // 外部プロセス (shell での agent 実行等) が作ったファイルを取り込む
             app.refresh();
@@ -122,13 +114,13 @@ fn editor_argv(editor: &str) -> io::Result<Vec<String>> {
     let argv = shell_words::split(editor).map_err(|e| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
-            format!("$EDITOR の解析に失敗: {e}"),
+            format!("failed to parse $EDITOR: {e}"),
         )
     })?;
     if argv.is_empty() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "$EDITOR が空です",
+            "$EDITOR is empty",
         ));
     }
     Ok(argv)

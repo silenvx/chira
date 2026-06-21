@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use chrono::Local;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
+use crate::i18n::{self, Lang};
 use crate::scratch::{self, Entry};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -42,14 +43,15 @@ pub struct App {
     pub status: String,
     pub pending: Option<Pending>,
     pub should_quit: bool,
+    pub lang: Lang,
 }
 
 impl App {
     pub fn new() -> io::Result<Self> {
-        Ok(Self::with_root(scratch::root()?))
+        Ok(Self::with_root(scratch::root()?, i18n::lang()))
     }
 
-    pub fn with_root(root: PathBuf) -> Self {
+    pub fn with_root(root: PathBuf, lang: Lang) -> Self {
         let mut app = Self {
             cwd: root.clone(),
             root,
@@ -62,6 +64,7 @@ impl App {
             status: String::new(),
             pending: None,
             should_quit: false,
+            lang,
         };
         app.refresh();
         app
@@ -103,8 +106,8 @@ impl App {
     fn update_preview(&mut self) {
         self.preview = match self.selected_entry() {
             None => String::new(),
-            Some(e) if e.is_dir => scratch::tree(&e.path, 4, 100),
-            Some(e) => preview_file(&e.path),
+            Some(e) if e.is_dir => scratch::tree(self.lang, &e.path, 4, 100),
+            Some(e) => preview_file(self.lang, &e.path),
         };
     }
 
@@ -228,8 +231,8 @@ impl App {
             KeyCode::Char('y') => {
                 if let Some(entry) = self.selected_entry().cloned() {
                     match scratch::remove(&entry) {
-                        Ok(()) => self.status = format!("削除しました: {}", entry.name),
-                        Err(e) => self.status = format!("削除に失敗: {e}"),
+                        Ok(()) => self.status = i18n::status_deleted(self.lang, &entry.name),
+                        Err(e) => self.status = i18n::status_delete_failed(self.lang, &e),
                     }
                     self.refresh();
                 }
@@ -305,16 +308,16 @@ impl App {
                     // 作成直後にそのまま $EDITOR で開く
                     self.pending = Some(Pending::Editor(path));
                 }
-                Err(e) => self.status = format!("作成に失敗: {e}"),
+                Err(e) => self.status = i18n::status_create_failed(self.lang, &e),
             },
             InputKind::NewDir => match scratch::create_dir(&self.cwd, &name) {
                 Ok(_) => {
                     self.search.clear();
                     self.refresh();
                     self.select_by_name(&name);
-                    self.status = format!("作成しました: {name}/");
+                    self.status = i18n::status_created_dir(self.lang, &name);
                 }
-                Err(e) => self.status = format!("作成に失敗: {e}"),
+                Err(e) => self.status = i18n::status_create_failed(self.lang, &e),
             },
             InputKind::Rename => {
                 if let Some(entry) = self.selected_entry().cloned() {
@@ -323,9 +326,9 @@ impl App {
                             self.search.clear();
                             self.refresh();
                             self.select_by_name(&name);
-                            self.status = "名前を変更しました".into();
+                            self.status = i18n::status_renamed(self.lang).into();
                         }
-                        Err(e) => self.status = format!("変更に失敗: {e}"),
+                        Err(e) => self.status = i18n::status_rename_failed(self.lang, &e),
                     }
                 }
             }
@@ -344,17 +347,17 @@ impl App {
     }
 }
 
-fn preview_file(path: &Path) -> String {
+fn preview_file(lang: Lang, path: &Path) -> String {
     match std::fs::metadata(path) {
         // 通常ファイル以外 (FIFO はメインスレッドの read をブロックし、
         // キャラクタデバイスは len==0 で無限読み→OOM になる) は読まない
-        Ok(m) if !m.is_file() => "(特殊ファイル: プレビュー不可)".into(),
-        Ok(m) if m.len() > PREVIEW_MAX_BYTES => format!("(大きいファイル: {} bytes)", m.len()),
+        Ok(m) if !m.is_file() => i18n::preview_special_file(lang).into(),
+        Ok(m) if m.len() > PREVIEW_MAX_BYTES => i18n::preview_large_file(lang, m.len()),
         Ok(_) => match scratch::read_text(path) {
             Ok(text) => text,
-            Err(_) => "(バイナリ/読み取り不可)".into(),
+            Err(_) => i18n::preview_binary(lang).into(),
         },
-        Err(e) => format!("(読み取り不可: {e})"),
+        Err(e) => i18n::preview_unreadable(lang, &e),
     }
 }
 
@@ -389,7 +392,7 @@ mod tests {
     #[test]
     fn new_file_requests_editor_then_delete() {
         let root = temp_root();
-        let mut app = App::with_root(root.clone());
+        let mut app = App::with_root(root.clone(), Lang::En);
 
         // n で新規ファイル → 既定名を消して明示名 → Enter で作成し $EDITOR 要求
         app.on_key(key('n'));
@@ -401,7 +404,7 @@ mod tests {
         assert!(root.join("note.md").exists());
         match app.pending.take() {
             Some(Pending::Editor(p)) => assert!(p.ends_with("note.md")),
-            _ => panic!("作成直後は $EDITOR 起動が要求されるはず"),
+            _ => panic!("creating a new file should request $EDITOR"),
         }
 
         // 外部エディタの代わりに本文を書いておく
@@ -422,7 +425,7 @@ mod tests {
     fn enter_on_file_requests_editor() {
         let root = temp_root();
         scratch::create_file(&root, "a.md").unwrap();
-        let mut app = App::with_root(root.clone());
+        let mut app = App::with_root(root.clone(), Lang::En);
         app.on_key(special(KeyCode::Enter));
         assert!(matches!(app.pending, Some(Pending::Editor(_))));
         std::fs::remove_dir_all(&root).unwrap();
@@ -431,7 +434,7 @@ mod tests {
     #[test]
     fn create_dir_descend_ascend() {
         let root = temp_root();
-        let mut app = App::with_root(root.clone());
+        let mut app = App::with_root(root.clone(), Lang::En);
 
         app.on_key(key('N'));
         app.input.clear();
@@ -440,7 +443,7 @@ mod tests {
         assert!(root.join("ws").is_dir());
         assert!(
             app.pending.is_none(),
-            "ディレクトリ作成では editor を起動しない"
+            "creating a directory should not request $EDITOR"
         );
 
         // 作成した ws が選択されている → Enter で降下
@@ -457,7 +460,7 @@ mod tests {
     fn arrow_keys_navigate_like_hl() {
         let root = temp_root();
         scratch::create_dir(&root, "ws").unwrap();
-        let mut app = App::with_root(root.clone());
+        let mut app = App::with_root(root.clone(), Lang::En);
 
         // → で降下、← で親へ
         app.on_key(special(KeyCode::Right));
@@ -476,7 +479,7 @@ mod tests {
         let root = temp_root();
         scratch::create_file(&root, "a.md").unwrap();
         scratch::create_dir(&root, "ws").unwrap();
-        let mut app = App::with_root(root.clone());
+        let mut app = App::with_root(root.clone(), Lang::En);
         let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
 
         term.draw(|f| crate::ui::render(f, &app)).unwrap(); // Browse
@@ -499,7 +502,7 @@ mod tests {
     #[test]
     fn help_opens_and_any_key_closes() {
         let root = temp_root();
-        let mut app = App::with_root(root.clone());
+        let mut app = App::with_root(root.clone(), Lang::En);
         app.on_key(key('?'));
         assert_eq!(app.mode, Mode::Help);
         // h は Help 中はナビゲーションせず閉じるだけ
@@ -514,7 +517,7 @@ mod tests {
         let root = temp_root();
         scratch::create_file(&root, "alpha.md").unwrap();
         scratch::create_file(&root, "beta.md").unwrap();
-        let mut app = App::with_root(root.clone());
+        let mut app = App::with_root(root.clone(), Lang::En);
         assert_eq!(app.visible().len(), 2);
 
         app.on_key(key('/'));
@@ -529,7 +532,7 @@ mod tests {
     fn create_while_filtering_clears_search_and_selects_new() {
         let root = temp_root();
         scratch::create_file(&root, "alpha.md").unwrap();
-        let mut app = App::with_root(root.clone());
+        let mut app = App::with_root(root.clone(), Lang::En);
 
         // "alp" で絞り込み確定 (Enter で Browse に戻るがフィルタは残る) → 一致しない名前で新規作成
         app.on_key(key('/'));
@@ -554,7 +557,7 @@ mod tests {
     fn enter_cancels_delete_confirm() {
         let root = temp_root();
         scratch::create_file(&root, "keep.md").unwrap();
-        let mut app = App::with_root(root.clone());
+        let mut app = App::with_root(root.clone(), Lang::En);
 
         app.on_key(key('d'));
         assert_eq!(app.mode, Mode::ConfirmDelete);
@@ -580,7 +583,7 @@ mod tests {
             std::fs::remove_dir_all(&root).unwrap();
             return;
         }
-        assert!(preview_file(&fifo).contains("特殊ファイル"));
+        assert!(preview_file(Lang::En, &fifo).contains("special file"));
         std::fs::remove_dir_all(&root).unwrap();
     }
 }

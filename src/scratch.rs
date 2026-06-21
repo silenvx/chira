@@ -66,7 +66,7 @@ fn read_entries(dir: &Path) -> io::Result<Vec<Entry>> {
 /// dir 直下のエントリを更新が新しい順に返す (一覧表示用)。
 pub fn list(dir: &Path) -> io::Result<Vec<Entry>> {
     let mut entries = read_entries(dir)?;
-    entries.sort_by(|a, b| b.modified.cmp(&a.modified));
+    entries.sort_by_key(|e| std::cmp::Reverse(e.modified));
     Ok(entries)
 }
 

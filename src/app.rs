@@ -171,12 +171,10 @@ impl App {
                 self.status.clear();
             }
             KeyCode::Char('?') => self.mode = Mode::Help,
-            KeyCode::Esc => {
-                if !self.search.is_empty() {
-                    self.search.clear();
-                    self.selected = 0;
-                    self.update_preview();
-                }
+            KeyCode::Esc if !self.search.is_empty() => {
+                self.search.clear();
+                self.selected = 0;
+                self.update_preview();
             }
             _ => {}
         }

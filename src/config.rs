@@ -1,9 +1,9 @@
-use std::env;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::i18n::{self, Lang};
+use crate::scratch::env_path;
 
 /// config.toml から読んだ値。未指定 (キー不在・空文字・型不一致) は None で、
 /// 呼び出し側が env → ハードコード default へフォールバックする。
@@ -17,18 +17,19 @@ pub struct Config {
 /// 設定ファイルを読み込む。不在・空は未設定扱い (warning なし)。
 /// 読み取り/パース失敗は stderr に warning を出し、デフォルト設定で起動を継続する。
 pub fn load(lang: Lang) -> Config {
-    let chira_config = env::var("CHIRA_CONFIG").ok();
-    let xdg_config = env::var("XDG_CONFIG_HOME").ok();
-    let home = env::var("HOME").ok();
     let Some(path) = resolve_path(
-        chira_config.as_deref(),
-        xdg_config.as_deref(),
-        home.as_deref(),
+        env_path("CHIRA_CONFIG"),
+        env_path("XDG_CONFIG_HOME"),
+        env_path("HOME"),
     ) else {
         return Config::default();
     };
+    load_from_path(&path, lang)
+}
 
-    match fs::read_to_string(&path) {
+/// 解決済みパスから読み込み・パースする (env 解決を切り離してテスト可能にする)。
+fn load_from_path(path: &Path, lang: Lang) -> Config {
+    match fs::read_to_string(path) {
         Ok(text) => match parse(&text) {
             Ok(config) => config,
             Err(e) => {
@@ -49,18 +50,17 @@ pub fn load(lang: Lang) -> Config {
 
 /// 設定ファイルパスの解決順: $CHIRA_CONFIG → $XDG_CONFIG_HOME/chira → ~/.config/chira。
 fn resolve_path(
-    chira_config: Option<&str>,
-    xdg_config: Option<&str>,
-    home: Option<&str>,
+    chira_config: Option<PathBuf>,
+    xdg_config: Option<PathBuf>,
+    home: Option<PathBuf>,
 ) -> Option<PathBuf> {
-    if let Some(p) = chira_config.filter(|s| !s.is_empty()) {
-        return Some(PathBuf::from(p));
+    if let Some(p) = chira_config {
+        return Some(p);
     }
-    if let Some(d) = xdg_config.filter(|s| !s.is_empty()) {
-        return Some(Path::new(d).join("chira/config.toml"));
+    if let Some(d) = xdg_config {
+        return Some(d.join("chira/config.toml"));
     }
-    let home = home.filter(|s| !s.is_empty())?;
-    Some(Path::new(home).join(".config/chira/config.toml"))
+    Some(home?.join(".config/chira/config.toml"))
 }
 
 fn parse(text: &str) -> Result<Config, toml::de::Error> {
@@ -83,32 +83,76 @@ fn get_str(table: &toml::Table, key: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicU32, Ordering};
+
     use super::*;
+
+    fn temp_dir() -> PathBuf {
+        static COUNTER: AtomicU32 = AtomicU32::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("chira-config-{}-{}", std::process::id(), n));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
 
     #[test]
     fn resolve_path_precedence() {
         // CHIRA_CONFIG は絶対パスをそのまま使う
         assert_eq!(
-            resolve_path(Some("/etc/chira.toml"), Some("/xdg"), Some("/home/u")),
+            resolve_path(
+                Some(PathBuf::from("/etc/chira.toml")),
+                Some(PathBuf::from("/xdg")),
+                Some(PathBuf::from("/home/u")),
+            ),
             Some(PathBuf::from("/etc/chira.toml"))
         );
         // CHIRA_CONFIG 不在なら XDG_CONFIG_HOME/chira
         assert_eq!(
-            resolve_path(None, Some("/xdg"), Some("/home/u")),
+            resolve_path(
+                None,
+                Some(PathBuf::from("/xdg")),
+                Some(PathBuf::from("/home/u"))
+            ),
             Some(PathBuf::from("/xdg/chira/config.toml"))
         );
         // どちらも無ければ ~/.config/chira
         assert_eq!(
-            resolve_path(None, None, Some("/home/u")),
-            Some(PathBuf::from("/home/u/.config/chira/config.toml"))
-        );
-        // 空文字は未設定として次の候補へ送る
-        assert_eq!(
-            resolve_path(Some(""), Some(""), Some("/home/u")),
+            resolve_path(None, None, Some(PathBuf::from("/home/u"))),
             Some(PathBuf::from("/home/u/.config/chira/config.toml"))
         );
         // 解決先が一つも無ければ None
         assert_eq!(resolve_path(None, None, None), None);
+    }
+
+    #[test]
+    fn load_from_path_missing_is_default() {
+        let dir = temp_dir();
+        // 不在ファイルは warning なしで default
+        let config = load_from_path(&dir.join("absent.toml"), Lang::En);
+        assert_eq!(config, Config::default());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn load_from_path_reads_valid_config() {
+        let dir = temp_dir();
+        let path = dir.join("config.toml");
+        fs::write(&path, "dir = \"/scratch\"\neditor = \"nvim\"\n").unwrap();
+        let config = load_from_path(&path, Lang::En);
+        assert_eq!(config.dir.as_deref(), Some("/scratch"));
+        assert_eq!(config.editor.as_deref(), Some("nvim"));
+        assert_eq!(config.shell, None);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn load_from_path_broken_toml_is_default() {
+        let dir = temp_dir();
+        let path = dir.join("config.toml");
+        // 壊れた TOML は warning + default で起動継続 (panic しない)
+        fs::write(&path, "dir = ").unwrap();
+        assert_eq!(load_from_path(&path, Lang::En), Config::default());
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

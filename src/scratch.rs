@@ -17,9 +17,7 @@ pub struct Entry {
 /// env > config の順は、既存の `CHIRA_DIR=... chira` を config 導入後も優先させるため。
 /// macOS でも Apple の Application Support ではなく XDG 流に寄せ、ターミナルから扱いやすくする。
 pub fn root(config_dir: Option<&str>) -> io::Result<PathBuf> {
-    let home = env::var_os("HOME")
-        .filter(|v| !v.is_empty())
-        .map(PathBuf::from);
+    let home = env_path("HOME");
     let dir = resolve_root(
         env_path("CHIRA_DIR"),
         config_dir,
@@ -62,7 +60,8 @@ fn require_home(home: Option<&Path>) -> io::Result<&Path> {
     home.ok_or_else(|| io::Error::other("HOME is not set"))
 }
 
-fn env_path(key: &str) -> Option<PathBuf> {
+/// 環境変数を非空のパスとして取得する (非 UTF-8 値も保持。空文字は未設定扱い)。
+pub(crate) fn env_path(key: &str) -> Option<PathBuf> {
     env::var_os(key)
         .filter(|v| !v.is_empty())
         .map(PathBuf::from)

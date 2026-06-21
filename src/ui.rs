@@ -6,6 +6,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, List, ListItem, ListState, Paragraph, Wrap};
 
 use crate::app::{App, InputKind, Mode};
+use crate::i18n;
 
 pub fn render(frame: &mut Frame, app: &App) {
     let [header, body, footer] = Layout::vertical([
@@ -24,7 +25,7 @@ pub fn render(frame: &mut Frame, app: &App) {
     } else if app.mode == Mode::ConfirmDelete {
         render_confirm(frame, app, body);
     } else if app.mode == Mode::Help {
-        render_help(frame, body);
+        render_help(frame, app, body);
     }
 }
 
@@ -36,7 +37,7 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
         ),
         Span::raw(format!(" {}  ", app.rel_path())),
         Span::styled(
-            format!("{} 件", app.visible().len()),
+            i18n::header_count(app.lang, app.visible().len()),
             Style::new().fg(Color::Gray),
         ),
     ];
@@ -44,7 +45,7 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
         let cursor = if app.mode == Mode::Search { "▌" } else { "" };
         spans.push(Span::raw("   "));
         spans.push(Span::styled(
-            format!("検索: {}{}", app.search, cursor),
+            i18n::header_search(app.lang, &app.search, cursor),
             Style::new().fg(Color::Yellow),
         ));
     }
@@ -78,7 +79,7 @@ fn render_browse(frame: &mut Frame, app: &App, area: Rect) {
         .collect();
 
     let list = List::new(items)
-        .block(Block::bordered().title(" 一覧 "))
+        .block(Block::bordered().title(i18n::list_title(app.lang)))
         .highlight_style(Style::new().add_modifier(Modifier::REVERSED))
         .highlight_symbol("› ");
     let mut state = ListState::default();
@@ -88,15 +89,15 @@ fn render_browse(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_stateful_widget(list, left, &mut state);
 
     let title = match app.selected_entry() {
-        Some(e) if e.is_dir => " ディレクトリ内容 ",
-        Some(_) => " プレビュー ",
-        None => " プレビュー ",
+        Some(e) if e.is_dir => i18n::preview_dir_title(app.lang),
+        Some(_) => i18n::preview_file_title(app.lang),
+        None => i18n::preview_file_title(app.lang),
     };
     let preview = if app.preview.is_empty() && app.selected_entry().is_none() {
         let hint = if app.search.is_empty() {
-            "空です。n: ファイル作成  N: ディレクトリ作成"
+            i18n::empty_hint(app.lang)
         } else {
-            "一致するエントリがありません。"
+            i18n::empty_search_hint(app.lang)
         };
         Paragraph::new(hint).style(Style::new().fg(Color::Gray))
     } else {
@@ -107,9 +108,9 @@ fn render_browse(frame: &mut Frame, app: &App, area: Rect) {
 
 fn render_input(frame: &mut Frame, app: &App, kind: InputKind, area: Rect) {
     let title = match kind {
-        InputKind::NewFile => " 新規ファイル名 ",
-        InputKind::NewDir => " 新規ディレクトリ名 ",
-        InputKind::Rename => " 名前を変更 ",
+        InputKind::NewFile => i18n::input_title_new_file(app.lang),
+        InputKind::NewDir => i18n::input_title_new_dir(app.lang),
+        InputKind::Rename => i18n::input_title_rename(app.lang),
     };
     let popup = centered(area, 60, 3);
     frame.render_widget(Clear, popup);
@@ -131,45 +132,32 @@ fn render_confirm(frame: &mut Frame, app: &App, area: Rect) {
     let popup = centered(area, 54, 4);
     frame.render_widget(Clear, popup);
     let what = if is_dir {
-        format!(
-            "ディレクトリ「{}」を中身ごと削除しますか?",
-            truncate(&name, 26)
-        )
+        i18n::confirm_delete_dir(app.lang, &truncate(&name, 26))
     } else {
-        format!("「{}」を削除しますか?", truncate(&name, 30))
+        i18n::confirm_delete_file(app.lang, &truncate(&name, 30))
     };
     let text = vec![
         Line::raw(what),
         Line::from(vec![
             Span::styled("y", Style::new().fg(Color::Red).bold()),
-            Span::raw(": 削除   "),
+            Span::raw(i18n::confirm_delete_label(app.lang)),
             Span::styled("n/Esc", Style::new().fg(Color::Green).bold()),
-            Span::raw(": キャンセル"),
+            Span::raw(i18n::confirm_cancel_label(app.lang)),
         ]),
     ];
     frame.render_widget(
-        Paragraph::new(text).block(Block::bordered().title(" 確認 ").border_style(Color::Red)),
+        Paragraph::new(text).block(
+            Block::bordered()
+                .title(i18n::confirm_title(app.lang))
+                .border_style(Color::Red),
+        ),
         popup,
     );
 }
 
-fn render_help(frame: &mut Frame, area: Rect) {
-    const KEYS: &[(&str, &str)] = &[
-        ("j / k, ↓ / ↑", "カーソル移動"),
-        ("g / G", "先頭 / 末尾"),
-        ("l / → / Enter", "開く (ファイル→$EDITOR, dir→中へ)"),
-        ("h / ← / Backspace", "親ディレクトリへ戻る"),
-        ("e", "$EDITOR で開く"),
-        ("s", "シェルを開く (実験・agent 実行)"),
-        ("n / N", "新規ファイル / ディレクトリ"),
-        ("r", "名前を変更"),
-        ("d", "削除 (確認あり)"),
-        ("/", "名前で絞り込み検索"),
-        ("?", "このヘルプ"),
-        ("q", "終了"),
-    ];
-
-    let lines: Vec<Line> = KEYS
+fn render_help(frame: &mut Frame, app: &App, area: Rect) {
+    let keys = i18n::help_rows(app.lang);
+    let lines: Vec<Line> = keys
         .iter()
         .map(|(k, desc)| {
             Line::from(vec![
@@ -179,21 +167,21 @@ fn render_help(frame: &mut Frame, area: Rect) {
         })
         .collect();
 
-    let popup = centered(area, 56, KEYS.len() as u16 + 2);
+    let popup = centered(area, 56, keys.len() as u16 + 2);
     frame.render_widget(Clear, popup);
     frame.render_widget(
-        Paragraph::new(lines).block(Block::bordered().title(" ヘルプ (vim-like) ")),
+        Paragraph::new(lines).block(Block::bordered().title(i18n::help_title(app.lang))),
         popup,
     );
 }
 
 fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
     let help = match app.mode {
-        Mode::Browse => "j/k:移動  l:開く  h:親  s:シェル  n:新規  /:検索  ?:ヘルプ  q:終了",
-        Mode::Search => "文字入力で絞り込み  Enter:確定  Esc:クリア",
-        Mode::Input(_) => "Enter:決定  Esc:キャンセル",
-        Mode::ConfirmDelete => "y:削除  n/Esc:キャンセル",
-        Mode::Help => "何かキーを押すと閉じる",
+        Mode::Browse => i18n::footer_browse(app.lang),
+        Mode::Search => i18n::footer_search(app.lang),
+        Mode::Input(_) => i18n::footer_input(app.lang),
+        Mode::ConfirmDelete => i18n::footer_confirm(app.lang),
+        Mode::Help => i18n::footer_help_close(app.lang),
     };
     let line = if app.status.is_empty() {
         Line::from(Span::styled(help, Style::new().fg(Color::Gray)))

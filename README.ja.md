@@ -54,6 +54,19 @@ end
 CHIRA_DIR=~/scratch chira   # 場所を変える
 ```
 
+## 表示言語
+
+UI 文字列（ヘルプ・ステータス・確認ダイアログ）は以下の順序で決まる:
+
+1. `CHIRA_LANG` — 明示的な override（大文字小文字を無視）。受理する値: `ja` / `ja_jp` / `japanese` → 日本語、`en` / `en_us` / `english` → 英語。それ以外の値は無視して locale 判定へフォールバック
+2. POSIX locale: `LC_ALL` → `LC_MESSAGES` → `LANG`（`ja` で始まる値は日本語、それ以外（`C` / `POSIX` 含む）は英語）
+3. デフォルト: 英語
+
+```sh
+CHIRA_LANG=ja chira   # 日本語 UI を強制
+CHIRA_LANG=en chira   # 英語 UI を強制
+```
+
 ## キー操作
 
 | キー | 動作 |

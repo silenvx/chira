@@ -1,4 +1,5 @@
 mod app;
+mod i18n;
 mod scratch;
 mod ui;
 
@@ -19,18 +20,9 @@ use ratatui::crossterm::terminal::{
 
 use app::{App, Pending};
 
-const USAGE: &str = "\
-chira — 一時的な scratch ディレクトリを管理する TUI
-
-usage: chira [--cd-file <path>]
-
-  --cd-file <path>   終了時に最終ディレクトリを <path> へ書き出す
-                     (シェル関数で cd するための連携用。README 参照)
-  -h, --help         このヘルプを表示
-";
-
 fn main() -> io::Result<()> {
-    let cd_file = match parse_args() {
+    let lang = i18n::lang();
+    let cd_file = match parse_args(lang) {
         Ok(v) => v,
         Err(msg) => {
             eprint!("{msg}");
@@ -52,26 +44,26 @@ fn main() -> io::Result<()> {
 }
 
 /// `--cd-file <path>` を取り出す。`--help` は usage を表示して終了する。
-fn parse_args() -> Result<Option<PathBuf>, String> {
+fn parse_args(lang: i18n::Lang) -> Result<Option<PathBuf>, String> {
     let mut cd_file = None;
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "-h" | "--help" => {
-                print!("{USAGE}");
+                print!("{}", i18n::usage(lang));
                 std::process::exit(0);
             }
             "--cd-file" => {
                 let path = args
                     .next()
-                    .ok_or_else(|| "--cd-file には引数が必要です\n".to_string())?;
+                    .ok_or_else(|| i18n::err_cd_file_needs_arg(lang).to_string())?;
                 cd_file = Some(PathBuf::from(path));
             }
             other => {
                 if let Some(path) = other.strip_prefix("--cd-file=") {
                     cd_file = Some(PathBuf::from(path));
                 } else {
-                    return Err(format!("不明な引数: {other}\n{USAGE}"));
+                    return Err(i18n::err_unknown_arg(lang, other));
                 }
             }
         }
@@ -90,8 +82,8 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
         if let Some(pending) = app.pending.take() {
             // 起動失敗 ($EDITOR/$SHELL 不在・対象ディレクトリ消失等) は回復可能なので
             // TUI を落とさず status に出して継続する
-            if let Err(e) = run_external(terminal, &pending) {
-                app.status = format!("外部プロセスの起動に失敗: {e}");
+            if let Err(e) = run_external(terminal, app.lang, &pending) {
+                app.status = i18n::err_external_launch(app.lang, &e);
             }
             // 外部プロセス (shell での agent 実行等) が作ったファイルを取り込む
             app.refresh();
@@ -101,12 +93,16 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
 }
 
 /// TUI から一旦抜けて外部プロセスを前面で実行し、終了後に TUI へ復帰する
-fn run_external(terminal: &mut DefaultTerminal, pending: &Pending) -> io::Result<()> {
+fn run_external(
+    terminal: &mut DefaultTerminal,
+    lang: i18n::Lang,
+    pending: &Pending,
+) -> io::Result<()> {
     disable_raw_mode()?;
     execute!(io::stdout(), LeaveAlternateScreen)?;
 
     let result = match pending {
-        Pending::Editor(path) => spawn_editor(path),
+        Pending::Editor(path) => spawn_editor(lang, path),
         Pending::Shell(dir) => spawn_shell(dir),
     };
 
@@ -118,25 +114,25 @@ fn run_external(terminal: &mut DefaultTerminal, pending: &Pending) -> io::Result
 
 /// $EDITOR を shell の語分割規則 (shell-words) で argv に分解する。
 /// 引数付き (`code --wait`) と quote 済みスペース入りパス (`'/My Apps/subl' -w`) の両方を扱う (whitespace split は後者を壊す)。
-fn editor_argv(editor: &str) -> io::Result<Vec<String>> {
+fn editor_argv(lang: i18n::Lang, editor: &str) -> io::Result<Vec<String>> {
     let argv = shell_words::split(editor).map_err(|e| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
-            format!("$EDITOR の解析に失敗: {e}"),
+            i18n::err_editor_parse(lang, &e),
         )
     })?;
     if argv.is_empty() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "$EDITOR が空です",
+            i18n::err_editor_empty(lang),
         ));
     }
     Ok(argv)
 }
 
-fn spawn_editor(path: &Path) -> io::Result<()> {
+fn spawn_editor(lang: i18n::Lang, path: &Path) -> io::Result<()> {
     let editor = env::var("EDITOR").unwrap_or_else(|_| "vi".into());
-    let argv = editor_argv(&editor)?;
+    let argv = editor_argv(lang, &editor)?;
     Command::new(&argv[0]).args(&argv[1..]).arg(path).status()?;
     Ok(())
 }
@@ -153,13 +149,14 @@ mod tests {
 
     #[test]
     fn editor_argv_handles_args_and_quoted_paths() {
-        assert_eq!(editor_argv("vi").unwrap(), ["vi"]);
-        assert_eq!(editor_argv("code --wait").unwrap(), ["code", "--wait"]);
+        let l = i18n::Lang::En;
+        assert_eq!(editor_argv(l, "vi").unwrap(), ["vi"]);
+        assert_eq!(editor_argv(l, "code --wait").unwrap(), ["code", "--wait"]);
         // quote 済みのスペース入りパスは 1 引数として保たれる
         assert_eq!(
-            editor_argv("'/My Apps/subl' -w").unwrap(),
+            editor_argv(l, "'/My Apps/subl' -w").unwrap(),
             ["/My Apps/subl", "-w"]
         );
-        assert!(editor_argv("").is_err());
+        assert!(editor_argv(l, "").is_err());
     }
 }

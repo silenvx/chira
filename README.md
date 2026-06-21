@@ -54,6 +54,19 @@ The location is resolved in this order: `$CHIRA_DIR` → `$XDG_DATA_HOME/chira` 
 CHIRA_DIR=~/scratch chira   # use a different location
 ```
 
+## Language
+
+UI strings (help overlay, status messages, prompts) follow this resolution order:
+
+1. `CHIRA_LANG` — explicit override (case-insensitive). Accepted values: `ja` / `ja_jp` / `japanese` → Japanese, `en` / `en_us` / `english` → English. Any other value falls through to the locale check
+2. POSIX locale: `LC_ALL` → `LC_MESSAGES` → `LANG` (values starting with `ja` select Japanese; everything else, including `C`/`POSIX`, selects English)
+3. Default: English
+
+```sh
+CHIRA_LANG=ja chira   # force Japanese UI
+CHIRA_LANG=en chira   # force English UI
+```
+
 ## Keybindings
 
 | Key | Action |

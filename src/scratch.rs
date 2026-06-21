@@ -13,15 +13,15 @@ pub struct Entry {
     pub modified: SystemTime,
 }
 
-/// scratch のルート: $SCRAP_DIR → $XDG_DATA_HOME/scrap → ~/.local/share/scrap。
+/// scratch のルート: $CHIRA_DIR → $XDG_DATA_HOME/chira → ~/.local/share/chira。
 /// macOS でも Apple の Application Support ではなく XDG 流に寄せ、ターミナルから扱いやすくする。
 pub fn root() -> io::Result<PathBuf> {
-    let dir = if let Some(d) = env_path("SCRAP_DIR") {
+    let dir = if let Some(d) = env_path("CHIRA_DIR") {
         d
     } else if let Some(d) = env_path("XDG_DATA_HOME") {
-        d.join("scrap")
+        d.join("chira")
     } else {
-        home()?.join(".local/share/scrap")
+        home()?.join(".local/share/chira")
     };
     fs::create_dir_all(&dir)?;
     Ok(dir)
@@ -205,7 +205,7 @@ mod tests {
     fn temp_root() -> PathBuf {
         static COUNTER: AtomicU32 = AtomicU32::new(0);
         let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let dir = env::temp_dir().join(format!("scrap-test-{}-{}", std::process::id(), n));
+        let dir = env::temp_dir().join(format!("chira-test-{}-{}", std::process::id(), n));
         fs::create_dir_all(&dir).unwrap();
         dir
     }

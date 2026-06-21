@@ -20,9 +20,9 @@ use ratatui::crossterm::terminal::{
 use app::{App, Pending};
 
 const USAGE: &str = "\
-scrap — 一時的な scratch ディレクトリを管理する TUI
+chira — 一時的な scratch ディレクトリを管理する TUI
 
-usage: scrap [--cd-file <path>]
+usage: chira [--cd-file <path>]
 
   --cd-file <path>   終了時に最終ディレクトリを <path> へ書き出す
                      (シェル関数で cd するための連携用。README 参照)

@@ -20,7 +20,7 @@ cargo install --locked chira
 
 `chira` can move your **calling shell's working directory** to the directory you ended up in when you quit (the lf / nnn approach). A child process cannot change its parent shell's cwd directly, so `chira` writes the final directory via `--cd-file` and a shell function does the `cd`. Without this wrapper, running the bare `chira` binary cannot change your shell's directory.
 
-Add to `~/.zshrc` (zsh / bash):
+Add to your shell startup file (`~/.zshrc` for zsh, `~/.bashrc` for bash):
 
 ```sh
 chira() {
@@ -60,8 +60,9 @@ CHIRA_DIR=~/scratch chira   # use a different location
 |---|---|
 | `j`/`↓`, `k`/`↑` | move cursor |
 | `g`/`G` | top / bottom |
-| `Enter` / `l` / `→` / `e` | open (file → `$EDITOR` / directory → descend into it) |
+| `Enter` / `l` / `→` | open (file → `$EDITOR` / directory → descend into it) |
 | `h` / `←` / `Backspace` | go to parent directory |
+| `e` | open the selected file in `$EDITOR` (files only) |
 | `s` | open `$SHELL` in the selected directory (or current if none) — for experiments / running agents |
 | `n` | new file (enter a name → open in `$EDITOR`) |
 | `N` | new directory |

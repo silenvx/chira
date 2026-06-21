@@ -440,7 +440,10 @@ mod tests {
         typed(&mut app, "ws");
         app.on_key(special(KeyCode::Enter));
         assert!(root.join("ws").is_dir());
-        assert!(app.pending.is_none(), "ディレクトリ作成では editor を起動しない");
+        assert!(
+            app.pending.is_none(),
+            "ディレクトリ作成では editor を起動しない"
+        );
 
         // 作成した ws が選択されている → Enter で降下
         app.on_key(special(KeyCode::Enter));
@@ -541,7 +544,10 @@ mod tests {
         app.on_key(special(KeyCode::Enter));
 
         assert!(app.search.is_empty());
-        assert_eq!(app.selected_entry().map(|e| e.name.as_str()), Some("report.md"));
+        assert_eq!(
+            app.selected_entry().map(|e| e.name.as_str()),
+            Some("report.md")
+        );
 
         std::fs::remove_dir_all(&root).unwrap();
     }

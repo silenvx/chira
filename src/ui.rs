@@ -30,9 +30,15 @@ pub fn render(frame: &mut Frame, app: &App) {
 
 fn render_header(frame: &mut Frame, app: &App, area: Rect) {
     let mut spans = vec![
-        Span::styled(" chira ", Style::new().bg(Color::Cyan).fg(Color::Black).bold()),
+        Span::styled(
+            " chira ",
+            Style::new().bg(Color::Cyan).fg(Color::Black).bold(),
+        ),
         Span::raw(format!(" {}  ", app.rel_path())),
-        Span::styled(format!("{} 件", app.visible().len()), Style::new().fg(Color::Gray)),
+        Span::styled(
+            format!("{} 件", app.visible().len()),
+            Style::new().fg(Color::Gray),
+        ),
     ];
     if app.mode == Mode::Search || !app.search.is_empty() {
         let cursor = if app.mode == Mode::Search { "▌" } else { "" };
@@ -61,7 +67,10 @@ fn render_browse(frame: &mut Frame, app: &App, area: Rect) {
                 Span::raw(e.name.clone())
             };
             ListItem::new(Line::from(vec![
-                Span::styled(when.format("%m/%d %H:%M").to_string(), Style::new().fg(Color::Gray)),
+                Span::styled(
+                    when.format("%m/%d %H:%M").to_string(),
+                    Style::new().fg(Color::Gray),
+                ),
                 Span::raw("  "),
                 name,
             ]))
@@ -122,7 +131,10 @@ fn render_confirm(frame: &mut Frame, app: &App, area: Rect) {
     let popup = centered(area, 54, 4);
     frame.render_widget(Clear, popup);
     let what = if is_dir {
-        format!("ディレクトリ「{}」を中身ごと削除しますか?", truncate(&name, 26))
+        format!(
+            "ディレクトリ「{}」を中身ごと削除しますか?",
+            truncate(&name, 26)
+        )
     } else {
         format!("「{}」を削除しますか?", truncate(&name, 30))
     };

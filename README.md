@@ -1,53 +1,26 @@
 # chira
 
-一時的な scratch ディレクトリを素早く管理する TUI ツール (Rust + ratatui)。
+A TUI tool for managing your *chirashi no ura* — disposable directories where you scatter and scribble throwaway stuff (Rust + ratatui).
 
-メモ用のファイルだけでなく、「お試しで何かを走らせる作業ディレクトリ」も同じ場所で一覧・作成・削除でき、選んだディレクトリでそのままシェルを開いて実験・agent 実行ができる。ファイルの編集は `$EDITOR` に任せる（内蔵エディタは持たない）。
+> 🌐 This English README is machine-translated. The authoritative version is [日本語版 / README.ja.md](README.ja.md).
 
-名前は「散らす」→「チラシ（の裏）」=どうでもいいことを書き散らす場所、から。
+It handles not only note files but also "directories where you try running something," letting you list, create, and delete them in one place — and open a shell right inside a selected directory to experiment or run agents. Editing is delegated to `$EDITOR` (no built-in editor).
 
-## 保存場所
+*chirashi no ura* (チラシの裏) literally means "the back of a flyer" — in Japan, the throwaway surface you scribble worthless little things on. The name *chira* comes from 散らす (*chirasu*, "to scatter") → チラシ (*chirashi*, a flyer).
 
-`$CHIRA_DIR` → `$XDG_DATA_HOME/chira` → `~/.local/share/chira` の順で決まる（macOS でも XDG 流。ターミナルから扱いやすいよう Apple の Application Support は使わない）。中身は素のファイル/ディレクトリなので、外部エディタや `grep`・dotfiles 同期とそのまま併用できる。
-
-## 使い方
+## Install
 
 ```sh
-cargo run                                          # 開発実行
-cargo build --release && cp target/release/chira ~/.local/bin/   # 単一バイナリを PATH へ
-CHIRA_DIR=~/scratch chira                           # 場所を変える
+cargo install --locked chira
 ```
 
-## キー操作
+`--locked` makes the build use the published `Cargo.lock`, so you get the exact dependency versions that were tested.
 
-| キー | 動作 |
-|---|---|
-| `j`/`↓`, `k`/`↑` | カーソル移動 |
-| `g`/`G` | 先頭 / 末尾 |
-| `Enter` / `l` / `→` / `e` | 開く（ファイル→`$EDITOR` / ディレクトリ→中へ降りる） |
-| `h` / `←` / `Backspace` | 親ディレクトリへ戻る |
-| `s` | 選択ディレクトリ（無ければ現在地）で `$SHELL` を開く（実験・agent 実行用） |
-| `n` | 新規ファイル（名前入力 → `$EDITOR` で開く） |
-| `N` | 新規ディレクトリ |
-| `r` | 名前を変更 |
-| `d` | 削除（確認あり。ディレクトリは中身ごと） |
-| `/` | 名前で絞り込み検索 |
-| `?` | ヘルプを画面に表示（何かキーで閉じる） |
-| `q` | 終了 |
+### Shell integration (recommended)
 
-vim と同じく `h`/`j`/`k`/`l` で移動（`h`=親、`l`=開く）でき、方向キーでも操作可能。ヘルプは ranger/nnn と同じ `?`。ディレクトリを選ぶと右ペインに中身が `tree` 風（深さ 4・最大 100 行）で表示される。
+`chira` can move your **calling shell's working directory** to the directory you ended up in when you quit (the lf / nnn approach). A child process cannot change its parent shell's cwd directly, so `chira` writes the final directory via `--cd-file` and a shell function does the `cd`. Without this wrapper, running the bare `chira` binary cannot change your shell's directory.
 
-`$EDITOR`（未設定なら `vi`）や `s` で開いたシェル（未設定なら `/bin/sh`）を終了すると TUI に復帰し、その間に作られたファイルも一覧へ自動反映される。作成・改名・削除はディスクへ即反映される。
-
-## 終了したディレクトリへ cd する（シェル連携）
-
-`chira` の中でディレクトリを移動して `q` で終了したとき、**起動元シェルの作業ディレクトリをそのディレクトリに変更**できる（lf / nnn と同じ方式）。子プロセスは親シェルの cwd を直接変えられないため、`--cd-file` で最終ディレクトリを書き出し、シェル関数側で `cd` する。
-
-この連携を入れておくと、`chira` 終了後にシェル標準の **`cd -`** で元の場所へ戻れる（`cd` が `OLDPWD` を設定するため）。
-
-### zsh / bash
-
-`~/.zshrc` などに追加:
+Add to `~/.zshrc` (zsh / bash):
 
 ```sh
 chira() {
@@ -59,9 +32,7 @@ chira() {
 }
 ```
 
-### fish
-
-`~/.config/fish/functions/chira.fish` に:
+Or `~/.config/fish/functions/chira.fish` (fish):
 
 ```fish
 function chira
@@ -73,7 +44,43 @@ function chira
 end
 ```
 
-これで `chira` → ディレクトリへ降りる → `q` 終了、でシェルがそのディレクトリに移動する。直後に `cd -` で元いた場所へ戻れる。
+Now: launch `chira` → descend into a directory → quit with `q`, and your shell moves there. Right after, the shell's standard `cd -` takes you back to where you were (because `cd` sets `OLDPWD`).
+
+## Storage
+
+The location is resolved in this order: `$CHIRA_DIR` → `$XDG_DATA_HOME/chira` → `~/.local/share/chira` (XDG-style even on macOS; Apple's Application Support is not used, so it's easy to handle from the terminal). The contents are plain files and directories, so they work directly with external editors, `grep`, and dotfiles sync.
+
+```sh
+CHIRA_DIR=~/scratch chira   # use a different location
+```
+
+## Keybindings
+
+| Key | Action |
+|---|---|
+| `j`/`↓`, `k`/`↑` | move cursor |
+| `g`/`G` | top / bottom |
+| `Enter` / `l` / `→` / `e` | open (file → `$EDITOR` / directory → descend into it) |
+| `h` / `←` / `Backspace` | go to parent directory |
+| `s` | open `$SHELL` in the selected directory (or current if none) — for experiments / running agents |
+| `n` | new file (enter a name → open in `$EDITOR`) |
+| `N` | new directory |
+| `r` | rename |
+| `d` | delete (with confirmation; directories are removed recursively) |
+| `/` | filter by name |
+| `?` | show help on screen (any key closes it) |
+| `q` | quit |
+
+Like vim, `h`/`j`/`k`/`l` navigate (`h` = parent, `l` = open), and arrow keys work too. Help is `?` (same as ranger / nnn). Selecting a directory shows its contents in the right pane as a `tree`-style view (depth 4, up to 100 lines).
+
+Quitting `$EDITOR` (default `vi`) or the shell opened with `s` (default `/bin/sh`) returns you to the TUI, and any files created in the meantime show up in the list automatically. Create / rename / delete are reflected on disk immediately.
+
+## Development
+
+```sh
+cargo run               # run from source
+cargo build --release   # build the single binary
+```
 
 ## License
 

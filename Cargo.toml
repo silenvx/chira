@@ -17,6 +17,7 @@ path = "src/main.rs"
 ratatui = "0.30.2"
 chrono = "0.4.45"
 shell-words = "1.1.1"
+toml = { version = "1.1.2", default-features = false, features = ["parse", "serde"] }
 
 [profile.release]
 opt-level = "z"

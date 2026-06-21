@@ -54,6 +54,27 @@ end
 CHIRA_DIR=~/scratch chira   # 場所を変える
 ```
 
+## 設定ファイル
+
+シェルの起動ファイルを汚さずに永続的な設定を持てるよう、chira は TOML の設定ファイルを読む。パスは `$CHIRA_CONFIG`（直接指定）→ `$XDG_CONFIG_HOME/chira/config.toml` → `~/.config/chira/config.toml` の順で解決する。ファイル不在・空は「未設定」扱い（warning なし）、壊れたファイルは stderr に warning を出してデフォルト設定で起動する。
+
+```toml
+# ~/.config/chira/config.toml
+dir = "~/scratch"      # 保存場所（先頭の ~ は $HOME に展開される）
+editor = "nvim"        # 外部エディタ（引数も可。例: "code --wait"）
+shell = "/bin/zsh"     # `s` で開くシェル
+```
+
+各項目は省略すると個別にフォールバックする。優先順位（高 → 低）は **環境変数 → 設定ファイル → ハードコードのデフォルト** で、既存の環境変数ベースの使い方はそのまま動き続ける:
+
+- `dir`: `$CHIRA_DIR` → `dir` → `$XDG_DATA_HOME/chira` → `~/.local/share/chira`
+- `editor`: `$EDITOR` → `editor` → `vi`
+- `shell`: `$SHELL` → `shell` → `/bin/sh`
+
+```sh
+CHIRA_DIR=/tmp/other chira   # 環境変数が config の dir より優先される
+```
+
 ## 表示言語
 
 UI 文字列（ヘルプ・ステータス・確認ダイアログ）は以下の順序で決まる:

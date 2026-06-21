@@ -1,4 +1,5 @@
 mod app;
+mod config;
 mod i18n;
 mod scratch;
 mod ui;
@@ -19,6 +20,7 @@ use ratatui::crossterm::terminal::{
 };
 
 use app::{App, Pending};
+use config::Config;
 
 fn main() -> io::Result<()> {
     let lang = i18n::lang();
@@ -30,9 +32,10 @@ fn main() -> io::Result<()> {
         }
     };
 
-    let mut app = App::new()?;
+    let config = config::load(lang);
+    let mut app = App::new(config.dir.as_deref())?;
     let mut terminal = ratatui::init();
-    let result = run(&mut terminal, &mut app);
+    let result = run(&mut terminal, &mut app, &config);
     ratatui::restore();
     result?;
 
@@ -71,7 +74,7 @@ fn parse_args(lang: i18n::Lang) -> Result<Option<PathBuf>, String> {
     Ok(cd_file)
 }
 
-fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
+fn run(terminal: &mut DefaultTerminal, app: &mut App, config: &Config) -> io::Result<()> {
     while !app.should_quit {
         terminal.draw(|frame| ui::render(frame, app))?;
         if event::poll(Duration::from_millis(250))?
@@ -82,7 +85,7 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
         if let Some(pending) = app.pending.take() {
             // 起動失敗 ($EDITOR/$SHELL 不在・対象ディレクトリ消失等) は回復可能なので
             // TUI を落とさず status に出して継続する
-            if let Err(e) = run_external(terminal, app.lang, &pending) {
+            if let Err(e) = run_external(terminal, app.lang, &pending, config) {
                 app.status = i18n::err_external_launch(app.lang, &e);
             }
             // 外部プロセス (shell での agent 実行等) が作ったファイルを取り込む
@@ -97,13 +100,14 @@ fn run_external(
     terminal: &mut DefaultTerminal,
     lang: i18n::Lang,
     pending: &Pending,
+    config: &Config,
 ) -> io::Result<()> {
     disable_raw_mode()?;
     execute!(io::stdout(), LeaveAlternateScreen)?;
 
     let result = match pending {
-        Pending::Editor(path) => spawn_editor(lang, path),
-        Pending::Shell(dir) => spawn_shell(dir),
+        Pending::Editor(path) => spawn_editor(lang, path, config.editor.as_deref()),
+        Pending::Shell(dir) => spawn_shell(dir, config.shell.as_deref()),
     };
 
     enable_raw_mode()?;
@@ -130,22 +134,44 @@ fn editor_argv(lang: i18n::Lang, editor: &str) -> io::Result<Vec<String>> {
     Ok(argv)
 }
 
-fn spawn_editor(lang: i18n::Lang, path: &Path) -> io::Result<()> {
-    let editor = env::var("EDITOR").unwrap_or_else(|_| "vi".into());
+fn spawn_editor(lang: i18n::Lang, path: &Path, config_editor: Option<&str>) -> io::Result<()> {
+    let env_editor = env::var("EDITOR").ok();
+    let editor = resolve_external(env_editor.as_deref(), config_editor, "vi");
     let argv = editor_argv(lang, &editor)?;
     Command::new(&argv[0]).args(&argv[1..]).arg(path).status()?;
     Ok(())
 }
 
-fn spawn_shell(dir: &Path) -> io::Result<()> {
-    let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
+fn spawn_shell(dir: &Path, config_shell: Option<&str>) -> io::Result<()> {
+    let env_shell = env::var("SHELL").ok();
+    let shell = resolve_external(env_shell.as_deref(), config_shell, "/bin/sh");
     Command::new(shell).current_dir(dir).status()?;
     Ok(())
+}
+
+/// 外部プロセス名の解決: env > config > ハードコード default。空文字は未設定扱い。
+fn resolve_external(env_val: Option<&str>, config_val: Option<&str>, default: &str) -> String {
+    env_val
+        .filter(|s| !s.is_empty())
+        .or(config_val.filter(|s| !s.is_empty()))
+        .unwrap_or(default)
+        .to_string()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resolve_external_precedence() {
+        // env > config > default
+        assert_eq!(resolve_external(Some("nvim"), Some("emacs"), "vi"), "nvim");
+        assert_eq!(resolve_external(None, Some("emacs"), "vi"), "emacs");
+        assert_eq!(resolve_external(None, None, "vi"), "vi");
+        // 空文字は未設定扱いで次の候補へ送る
+        assert_eq!(resolve_external(Some(""), Some("emacs"), "vi"), "emacs");
+        assert_eq!(resolve_external(Some(""), Some(""), "vi"), "vi");
+    }
 
     #[test]
     fn editor_argv_handles_args_and_quoted_paths() {

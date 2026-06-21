@@ -13,28 +13,59 @@ pub struct Entry {
     pub modified: SystemTime,
 }
 
-/// scratch のルート: $CHIRA_DIR → $XDG_DATA_HOME/chira → ~/.local/share/chira。
+/// scratch のルート: $CHIRA_DIR → config の dir → $XDG_DATA_HOME/chira → ~/.local/share/chira。
+/// env > config の順は、既存の `CHIRA_DIR=... chira` を config 導入後も優先させるため。
 /// macOS でも Apple の Application Support ではなく XDG 流に寄せ、ターミナルから扱いやすくする。
-pub fn root() -> io::Result<PathBuf> {
-    let dir = if let Some(d) = env_path("CHIRA_DIR") {
-        d
-    } else if let Some(d) = env_path("XDG_DATA_HOME") {
-        d.join("chira")
-    } else {
-        home()?.join(".local/share/chira")
-    };
+pub fn root(config_dir: Option<&str>) -> io::Result<PathBuf> {
+    let home = env::var_os("HOME")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from);
+    let dir = resolve_root(
+        env_path("CHIRA_DIR"),
+        config_dir,
+        env_path("XDG_DATA_HOME"),
+        home.as_deref(),
+    )?;
     fs::create_dir_all(&dir)?;
     Ok(dir)
+}
+
+fn resolve_root(
+    chira_dir: Option<PathBuf>,
+    config_dir: Option<&str>,
+    xdg_data: Option<PathBuf>,
+    home: Option<&Path>,
+) -> io::Result<PathBuf> {
+    if let Some(d) = chira_dir {
+        Ok(d)
+    } else if let Some(d) = config_dir.filter(|s| !s.is_empty()) {
+        expand_tilde(d, home)
+    } else if let Some(d) = xdg_data {
+        Ok(d.join("chira"))
+    } else {
+        Ok(require_home(home)?.join(".local/share/chira"))
+    }
+}
+
+/// config 由来のパスの先頭 `~` を $HOME へ展開する (env 由来のパスは shell が展開済み)。
+fn expand_tilde(s: &str, home: Option<&Path>) -> io::Result<PathBuf> {
+    if s == "~" {
+        Ok(require_home(home)?.to_path_buf())
+    } else if let Some(rest) = s.strip_prefix("~/") {
+        Ok(require_home(home)?.join(rest))
+    } else {
+        Ok(PathBuf::from(s))
+    }
+}
+
+fn require_home(home: Option<&Path>) -> io::Result<&Path> {
+    home.ok_or_else(|| io::Error::other("HOME is not set"))
 }
 
 fn env_path(key: &str) -> Option<PathBuf> {
     env::var_os(key)
         .filter(|v| !v.is_empty())
         .map(PathBuf::from)
-}
-
-fn home() -> io::Result<PathBuf> {
-    env_path("HOME").ok_or_else(|| io::Error::other("HOME is not set"))
 }
 
 /// dir 直下のエントリを返す (隠しファイルは除外、未ソート)。
@@ -217,6 +248,64 @@ mod tests {
         let dir = env::temp_dir().join(format!("chira-test-{}-{}", std::process::id(), n));
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn resolve_root_precedence() {
+        let home = PathBuf::from("/home/u");
+        // env CHIRA_DIR は config より優先される (AC: env > config)
+        assert_eq!(
+            resolve_root(
+                Some(PathBuf::from("/env/dir")),
+                Some("/cfg/dir"),
+                Some(PathBuf::from("/xdg")),
+                Some(&home),
+            )
+            .unwrap(),
+            PathBuf::from("/env/dir")
+        );
+        // env 無し → config の dir を使い、先頭 ~ は $HOME へ展開する
+        assert_eq!(
+            resolve_root(
+                None,
+                Some("~/scratch"),
+                Some(PathBuf::from("/xdg")),
+                Some(&home)
+            )
+            .unwrap(),
+            PathBuf::from("/home/u/scratch")
+        );
+        // config の絶対パスはそのまま
+        assert_eq!(
+            resolve_root(None, Some("/abs/dir"), None, Some(&home)).unwrap(),
+            PathBuf::from("/abs/dir")
+        );
+        // env / config 無し → XDG_DATA_HOME/chira
+        assert_eq!(
+            resolve_root(None, None, Some(PathBuf::from("/xdg")), Some(&home)).unwrap(),
+            PathBuf::from("/xdg/chira")
+        );
+        // 空文字の config dir は未設定扱いで次の候補へ送る
+        assert_eq!(
+            resolve_root(None, Some(""), Some(PathBuf::from("/xdg")), Some(&home)).unwrap(),
+            PathBuf::from("/xdg/chira")
+        );
+        // すべて無し → ~/.local/share/chira
+        assert_eq!(
+            resolve_root(None, None, None, Some(&home)).unwrap(),
+            PathBuf::from("/home/u/.local/share/chira")
+        );
+    }
+
+    #[test]
+    fn resolve_root_tilde_needs_home() {
+        // config dir が ~ 始まりで $HOME 不明なときはエラー
+        assert!(resolve_root(None, Some("~/scratch"), None, None).is_err());
+        // ~ を含まない config dir は $HOME 不要
+        assert_eq!(
+            resolve_root(None, Some("/abs/dir"), None, None).unwrap(),
+            PathBuf::from("/abs/dir")
+        );
     }
 
     #[test]

@@ -27,24 +27,31 @@ pub fn load(lang: Lang) -> Config {
     load_from_path(&path, lang)
 }
 
-/// 解決済みパスから読み込み・パースする (env 解決を切り離してテスト可能にする)。
+/// 解決済みパスから読み込み・パースし、出る warning を stderr へ流す。
 fn load_from_path(path: &Path, lang: Lang) -> Config {
+    let (config, warning) = read_and_parse(path, lang);
+    if let Some(warning) = warning {
+        eprintln!("{warning}");
+    }
+    config
+}
+
+/// 読み込み・パースの結果と warning を返す (stderr 副作用を分離して warning 契約をテスト可能にする)。
+/// 不在は silent (None)、パース失敗・読み取り失敗は warning 文言を Some で返す。
+fn read_and_parse(path: &Path, lang: Lang) -> (Config, Option<String>) {
     match fs::read_to_string(path) {
         Ok(text) => match parse(&text) {
-            Ok(config) => config,
-            Err(e) => {
-                eprintln!("{}", i18n::warn_config_parse(lang, &path.display(), &e));
-                Config::default()
-            }
+            Ok(config) => (config, None),
+            Err(e) => (
+                Config::default(),
+                Some(i18n::warn_config_parse(lang, &path.display(), &e)),
+            ),
         },
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Config::default(),
-        Err(e) => {
-            eprintln!(
-                "{}",
-                i18n::warn_config_unreadable(lang, &path.display(), &e)
-            );
-            Config::default()
-        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => (Config::default(), None),
+        Err(e) => (
+            Config::default(),
+            Some(i18n::warn_config_unreadable(lang, &path.display(), &e)),
+        ),
     }
 }
 
@@ -125,33 +132,54 @@ mod tests {
     }
 
     #[test]
-    fn load_from_path_missing_is_default() {
+    fn read_and_parse_missing_is_silent_default() {
         let dir = temp_dir();
-        // 不在ファイルは warning なしで default
-        let config = load_from_path(&dir.join("absent.toml"), Lang::En);
+        // 不在ファイルは warning なし (None) で default
+        let (config, warning) = read_and_parse(&dir.join("absent.toml"), Lang::En);
         assert_eq!(config, Config::default());
+        assert_eq!(warning, None);
         fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
-    fn load_from_path_reads_valid_config() {
+    fn read_and_parse_valid_has_no_warning() {
         let dir = temp_dir();
         let path = dir.join("config.toml");
         fs::write(&path, "dir = \"/scratch\"\neditor = \"nvim\"\n").unwrap();
-        let config = load_from_path(&path, Lang::En);
+        let (config, warning) = read_and_parse(&path, Lang::En);
         assert_eq!(config.dir.as_deref(), Some("/scratch"));
         assert_eq!(config.editor.as_deref(), Some("nvim"));
         assert_eq!(config.shell, None);
+        assert_eq!(warning, None);
         fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
-    fn load_from_path_broken_toml_is_default() {
+    fn read_and_parse_broken_toml_warns_and_defaults() {
         let dir = temp_dir();
         let path = dir.join("config.toml");
-        // 壊れた TOML は warning + default で起動継続 (panic しない)
+        // 壊れた TOML は warning を出して default で起動継続 (README 契約)
         fs::write(&path, "dir = ").unwrap();
-        assert_eq!(load_from_path(&path, Lang::En), Config::default());
+        let (config, warning) = read_and_parse(&path, Lang::En);
+        assert_eq!(config, Config::default());
+        assert!(warning.is_some_and(|w| w.contains("parse")));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn read_and_parse_unreadable_warns_and_defaults() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = temp_dir();
+        let path = dir.join("config.toml");
+        fs::write(&path, "dir = \"/scratch\"").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
+        let (config, warning) = read_and_parse(&path, Lang::En);
+        // root は権限を無視して読めるため、読めた (warning なし) 場合のみ assert を skip する
+        if let Some(warning) = warning {
+            assert_eq!(config, Config::default());
+            assert!(warning.contains("read"));
+        }
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
         fs::remove_dir_all(&dir).unwrap();
     }
 

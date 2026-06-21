@@ -2,9 +2,12 @@
 name = "chira"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.88"
 description = "一時的な scratch ディレクトリを素早く管理する TUI ツール"
 license = "MIT"
 repository = "https://github.com/silenvx/chira"
+keywords = ["tui", "scratch", "cli", "ratatui", "scratchpad"]
+categories = ["command-line-utilities"]
 
 [[bin]]
 name = "chira"

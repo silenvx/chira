@@ -151,15 +151,27 @@ pub fn sweep(lang: Lang, opts: Options<'_>) -> io::Result<Report> {
 
 /// archive_dir が root と同一/祖先のとき sweep を abort するガード (canonical 比較、失敗時は
 /// lexical normalize 後の path prefix fallback)。lexical normalize は `..` を解決して
-/// `<root>/missing/..` を `<root>` と認識させる (canonicalize 失敗時の silent no-op 防止)
+/// `<root>/missing/..` を `<root>` と認識させる (canonicalize 失敗時の silent no-op 防止)。
+/// fallback では root / archive_dir 双方を cwd 基準で絶対化してから比較する
+/// (相対 root × 絶対 archive_dir 等の混在で starts_with が誤判定するのを防ぐ)
 fn detect_archive_root_conflict(root: &Path, archive_dir: &Path) -> Option<io::Error> {
     let root_canon = root.canonicalize().ok();
     let arch_canon = archive_dir.canonicalize().ok();
     let conflict = match (root_canon.as_deref(), arch_canon.as_deref()) {
         (Some(r), Some(a)) => r == a || r.starts_with(a),
         _ => {
-            let r = lexical_normalize(root);
-            let a = lexical_normalize(archive_dir);
+            let cwd = std::env::current_dir().ok();
+            let absolutize = |p: &Path| -> PathBuf {
+                if p.is_absolute() {
+                    p.to_path_buf()
+                } else if let Some(c) = &cwd {
+                    c.join(p)
+                } else {
+                    p.to_path_buf()
+                }
+            };
+            let r = lexical_normalize(&absolutize(root));
+            let a = lexical_normalize(&absolutize(archive_dir));
             r == a || r.starts_with(&a)
         }
     };
@@ -195,14 +207,32 @@ fn lexical_normalize(path: &Path) -> PathBuf {
 
 /// エントリが archive_dir 自身/その配下、または祖先かを判定する (祖先 = entry が archive_dir を内包する場合)。
 /// 祖先扱いも skip するのは、root 直下の dir 配下に archive_dir がある構成で、その親 dir を archive すると
-/// archive_dir も巻き込まれてしまう経路を防ぐため。canonical path 比較、失敗時は path prefix fallback
+/// archive_dir も巻き込まれてしまう経路を防ぐため。canonical path 比較、失敗時は path prefix fallback。
+/// entry が symlink の場合は ancestor 扱いを行わない (link 自身は内容を持たず、target が archive_dir を
+/// 内包しても link を archive するのは安全。symlink を follow した canonicalize 結果に引きずられない)
 fn is_under_archive(entry: &Path, archive_dir: &Path, archive_canonical: Option<&Path>) -> bool {
+    let entry_is_symlink = entry
+        .symlink_metadata()
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false);
     if let Some(canon) = archive_canonical
         && let Ok(entry_canon) = entry.canonicalize()
     {
-        return entry_canon.starts_with(canon) || canon.starts_with(&entry_canon);
+        if entry_canon.starts_with(canon) {
+            return true;
+        }
+        if entry_is_symlink {
+            return false;
+        }
+        return canon.starts_with(&entry_canon);
     }
-    entry.starts_with(archive_dir) || archive_dir.starts_with(entry)
+    if entry.starts_with(archive_dir) {
+        return true;
+    }
+    if entry_is_symlink {
+        return false;
+    }
+    archive_dir.starts_with(entry)
 }
 
 /// `<archive_dir>/<name>`、衝突時は `<name>.<unix_ts>` または `<name>.<unix_ts>_<N>` を付与。

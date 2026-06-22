@@ -55,20 +55,24 @@ struct GcArgs {
 fn parse_gc_args(lang: Lang, args: Vec<String>) -> Result<GcArgs, String> {
     let mut out = GcArgs::default();
     let mut iter = args.into_iter();
+    // option の引数が次の `--xxx` flag を誤って消費する事故を防ぐガード
+    // (例: `gc --ttl 30d --archive-dir --dry-run` で --dry-run が archive-dir 値になり、
+    //  silent に dry-run が無効化されて実 archive されるのを防ぐ)
+    let take_value = |iter: &mut std::vec::IntoIter<String>, opt: &str| -> Result<String, String> {
+        let v = iter
+            .next()
+            .ok_or_else(|| i18n::err_option_needs_arg(lang, opt))?;
+        if v.starts_with('-') {
+            return Err(i18n::err_option_needs_arg(lang, opt));
+        }
+        Ok(v)
+    };
     while let Some(arg) = iter.next() {
         match arg.as_str() {
             "--dry-run" => out.dry_run = true,
-            "--ttl" => {
-                out.ttl = Some(
-                    iter.next()
-                        .ok_or_else(|| i18n::err_option_needs_arg(lang, "--ttl"))?,
-                );
-            }
+            "--ttl" => out.ttl = Some(take_value(&mut iter, "--ttl")?),
             "--archive-dir" => {
-                let path = iter
-                    .next()
-                    .ok_or_else(|| i18n::err_option_needs_arg(lang, "--archive-dir"))?;
-                out.archive_dir = Some(PathBuf::from(path));
+                out.archive_dir = Some(PathBuf::from(take_value(&mut iter, "--archive-dir")?));
             }
             other => {
                 if let Some(v) = other.strip_prefix("--ttl=") {

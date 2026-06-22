@@ -54,6 +54,23 @@ pub fn resolve_external(env_val: Option<&str>, config_val: Option<&str>, default
         .to_string()
 }
 
+/// ExitStatus を chira 全体の exit code 規約 (success=0, failure=非ゼロ) へマップする。
+/// 通常終了は `code()` をそのまま返し、シグナル終了 (Ctrl+C 等で `code()` が `None`) は
+/// unix 慣習に揃って 128 + signal を返す (script 連携で「成功」扱いされる事故を防ぐ)。
+pub fn exit_code_from_status(status: ExitStatus) -> i32 {
+    if let Some(code) = status.code() {
+        return code;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(signal) = status.signal() {
+            return 128 + signal;
+        }
+    }
+    1
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -82,5 +99,17 @@ mod tests {
             ["/My Apps/subl", "-w"]
         );
         assert!(command_argv(l, "").is_err());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn exit_code_from_status_handles_signal_termination() {
+        use std::os::unix::process::ExitStatusExt;
+        // 通常終了 (exit 7) → 7
+        let normal = ExitStatus::from_raw(7 << 8);
+        assert_eq!(exit_code_from_status(normal), 7);
+        // SIGINT (signal 2) で kill → 128 + 2 = 130 (Ctrl+C で正常終了扱いになる事故を防ぐ)
+        let killed = ExitStatus::from_raw(2);
+        assert_eq!(exit_code_from_status(killed), 130);
     }
 }

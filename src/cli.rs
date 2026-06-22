@@ -181,7 +181,7 @@ fn cmd_new(lang: Lang, config: &Config, args: Vec<String>) -> i32 {
         return 0;
     }
     match external::spawn_editor(lang, &path, config.editor.as_deref()) {
-        Ok(status) => status.code().unwrap_or(0),
+        Ok(status) => external::exit_code_from_status(status),
         Err(e) => cli_error(lang, "new", &e),
     }
 }
@@ -247,7 +247,7 @@ fn cmd_edit(lang: Lang, config: &Config, args: Vec<String>) -> i32 {
         Err(e) => return cli_error(lang, "edit", &e),
     };
     match external::spawn_editor(lang, &path, config.editor.as_deref()) {
-        Ok(status) => status.code().unwrap_or(0),
+        Ok(status) => external::exit_code_from_status(status),
         Err(e) => cli_error(lang, "edit", &e),
     }
 }
@@ -281,7 +281,7 @@ fn cmd_shell(lang: Lang, config: &Config, args: Vec<String>) -> i32 {
         return 1;
     }
     match external::spawn_shell(lang, &target, config.shell.as_deref()) {
-        Ok(status) => status.code().unwrap_or(0),
+        Ok(status) => external::exit_code_from_status(status),
         Err(e) => cli_error(lang, "shell", &e),
     }
 }
@@ -364,7 +364,8 @@ fn confirm_delete(lang: Lang, entry: &Entry) -> bool {
     if stdin.lock().read_line(&mut line).is_err() {
         return false;
     }
-    matches!(line.trim(), "y" | "Y" | "yes")
+    // 大文字小文字を区別せず `y` / `yes` を受ける (`YES` / `Yes` 等の入力でも確認が成立)
+    matches!(line.trim().to_lowercase().as_str(), "y" | "yes")
 }
 
 fn cmd_mv(lang: Lang, config: &Config, args: Vec<String>) -> i32 {

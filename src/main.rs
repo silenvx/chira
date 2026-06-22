@@ -25,17 +25,17 @@ use config::Config;
 
 fn main() -> io::Result<()> {
     let lang = i18n::lang();
-    let mut argv: Vec<String> = env::args().skip(1).collect();
+    let argv: Vec<String> = env::args().skip(1).collect();
 
-    // 第 1 引数が既知のサブコマンド → CLI ディスパッチ。
-    // それ以外 (--cd-file / --help / 引数なし) は従来どおり TUI モードに入る。
-    if let Some(first) = argv.first()
-        && !first.starts_with('-')
-    {
+    // README wrapper が `--cd-file <tmp>` を前置するため、argv 中の最初の非フラグが subcommand なら CLI ディスパッチ。
+    // CLI モードでは --cd-file は無視する (wrapper の cd は empty file で no-op になる)。
+    if let Some(sub_idx) = first_non_flag_index(&argv) {
+        let first = &argv[sub_idx];
         if cli::is_subcommand(first) {
-            let sub = argv.remove(0);
+            let sub = first.clone();
+            let sub_args = argv[sub_idx + 1..].to_vec();
             let config = config::load(lang);
-            let code = cli::run(lang, &config, &sub, argv);
+            let code = cli::run(lang, &config, &sub, sub_args);
             std::process::exit(code);
         } else {
             eprint!("{}", i18n::err_unknown_arg(lang, first));
@@ -63,6 +63,25 @@ fn main() -> io::Result<()> {
         fs::write(path, app.cwd.as_os_str().as_bytes())?;
     }
     Ok(())
+}
+
+/// argv 中の最初の「-」始まりでないトークンの index を返す。
+/// シェル wrapper が `--cd-file <tmp>` を前置するため、サブコマンドは必ずしも先頭ではない。
+fn first_non_flag_index(argv: &[String]) -> Option<usize> {
+    let mut i = 0;
+    while i < argv.len() {
+        let arg = &argv[i];
+        if !arg.starts_with('-') {
+            return Some(i);
+        }
+        // `--cd-file <value>` のように引数を取る flag は value 部をスキップする
+        if arg == "--cd-file" {
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+    None
 }
 
 /// `--cd-file <path>` を取り出す。`--help` は usage を表示して終了する。
@@ -161,5 +180,28 @@ mod tests {
         );
         assert!(parse_args(&args(&["--cd-file"]), l).is_err());
         assert!(parse_args(&args(&["--bogus"]), l).is_err());
+    }
+
+    /// README のシェル wrapper 経由でも CLI subcommand が動く (`--cd-file <tmp>` を飛ばして検出)
+    #[test]
+    fn first_non_flag_index_skips_cd_file_pair() {
+        // 引数なし → None (TUI モード)
+        assert_eq!(first_non_flag_index(&args(&[])), None);
+        // 先頭サブコマンド (素の `chira ls`)
+        assert_eq!(first_non_flag_index(&args(&["ls"])), Some(0));
+        // wrapper 経由 (`chira --cd-file /tmp/x ls`) は index 2 を返す
+        assert_eq!(
+            first_non_flag_index(&args(&["--cd-file", "/tmp/x", "ls"])),
+            Some(2)
+        );
+        // 既存の `--cd-file=/tmp/y` 形 (value 同 token) も次の token がサブコマンド
+        assert_eq!(
+            first_non_flag_index(&args(&["--cd-file=/tmp/y", "ls"])),
+            Some(1)
+        );
+        // フラグのみ (`chira --cd-file /tmp/x`) → None (TUI モード継続)
+        assert_eq!(first_non_flag_index(&args(&["--cd-file", "/tmp/x"])), None);
+        // 不明 flag は skip しない (parse_args 側で reject される)
+        assert_eq!(first_non_flag_index(&args(&["--unknown", "foo"])), Some(1));
     }
 }

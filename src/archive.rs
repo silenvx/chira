@@ -63,24 +63,6 @@ pub fn sweep(lang: Lang, opts: Options<'_>) -> io::Result<Report> {
             report.kept += 1;
             continue;
         }
-        if entry.is_dir {
-            // exists() は permission deny でも false を返すため、
-            // 「.keep が見えない = ない」と誤判定し protected ディレクトリを誤 archive しうる。
-            // try_exists でエラーを切り分け、判定不能時は warning + skip (safe-side: 保護)
-            match entry.path.join(KEEP_MARKER).try_exists() {
-                Ok(true) => {
-                    report.kept += 1;
-                    continue;
-                }
-                Ok(false) => {}
-                Err(e) => {
-                    report
-                        .errors
-                        .push(i18n::warn_archive_keep_probe(lang, &entry.name, &e));
-                    continue;
-                }
-            }
-        }
         // symlink_metadata でエントリ自身の mtime を取る (metadata() の follow ではリンク先の mtime になり寿命判定が崩れる)
         if entry.path.is_symlink() && !entry.path.exists() {
             let broken_err = io::Error::new(io::ErrorKind::NotFound, "broken symlink");
@@ -109,6 +91,23 @@ pub fn sweep(lang: Lang, opts: Options<'_>) -> io::Result<Report> {
         if elapsed <= opts.ttl {
             report.kept += 1;
             continue;
+        }
+        // .keep probe は TTL gate の後に実行する。TTL 内の fresh dir で permission deny の
+        // probe が走ると不要な errors push + exit 1 になり cron/startup sweep を壊すため
+        if entry.is_dir {
+            match entry.path.join(KEEP_MARKER).try_exists() {
+                Ok(true) => {
+                    report.kept += 1;
+                    continue;
+                }
+                Ok(false) => {}
+                Err(e) => {
+                    report
+                        .errors
+                        .push(i18n::warn_archive_keep_probe(lang, &entry.name, &e));
+                    continue;
+                }
+            }
         }
 
         if opts.dry_run {
@@ -148,13 +147,19 @@ pub fn sweep(lang: Lang, opts: Options<'_>) -> io::Result<Report> {
     Ok(report)
 }
 
-/// archive_dir が root と同一/祖先のとき sweep を abort するガード (canonical 比較、失敗時は path prefix fallback)
+/// archive_dir が root と同一/祖先のとき sweep を abort するガード (canonical 比較、失敗時は
+/// lexical normalize 後の path prefix fallback)。lexical normalize は `..` を解決して
+/// `<root>/missing/..` を `<root>` と認識させる (canonicalize 失敗時の silent no-op 防止)
 fn detect_archive_root_conflict(root: &Path, archive_dir: &Path) -> Option<io::Error> {
     let root_canon = root.canonicalize().ok();
     let arch_canon = archive_dir.canonicalize().ok();
     let conflict = match (root_canon.as_deref(), arch_canon.as_deref()) {
         (Some(r), Some(a)) => r == a || r.starts_with(a),
-        _ => root == archive_dir || root.starts_with(archive_dir),
+        _ => {
+            let r = lexical_normalize(root);
+            let a = lexical_normalize(archive_dir);
+            r == a || r.starts_with(&a)
+        }
     };
     if conflict {
         Some(io::Error::new(
@@ -168,6 +173,22 @@ fn detect_archive_root_conflict(root: &Path, archive_dir: &Path) -> Option<io::E
     } else {
         None
     }
+}
+
+/// `..` を lexical に解決 (symlink follow せず、純粋なパス component 処理)。
+/// canonicalize 失敗時の fallback で「missing component + `..` で root を指す path」を見抜く
+fn lexical_normalize(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for c in path.components() {
+        match c {
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            std::path::Component::CurDir => {}
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
 }
 
 /// エントリが archive_dir 自身、もしくはその配下かを判定する。
@@ -531,6 +552,32 @@ mod tests {
             "warning should mention mtime: {}",
             report.errors[0]
         );
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn sweep_rejects_archive_dir_with_dotdot_to_root() {
+        let root = temp_root();
+        scratch::create_file(&root, "old.md").unwrap();
+        let now = SystemTime::now() + Duration::from_secs(86_400 * 31);
+        // archive_dir = "<root>/missing/.." (canonicalize 失敗、lexical normalize で root に等しい)
+        let archive_dir = root.join("missing").join("..");
+        let err = sweep(
+            Lang::En,
+            Options {
+                root: &root,
+                archive_dir,
+                ttl: Duration::from_secs(86_400 * 30),
+                keep_patterns: &[],
+                dry_run: false,
+                now,
+            },
+        )
+        .unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        // missing ディレクトリは作られない、old.md も remain
+        assert!(!root.join("missing").exists());
+        assert!(root.join("old.md").exists());
         fs::remove_dir_all(&root).unwrap();
     }
 

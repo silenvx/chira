@@ -44,9 +44,11 @@ cargo install --locked chira
 chira() {
   local tmp; tmp="$(mktemp)" || return
   command chira --cd-file "$tmp" "$@"
+  local status=$?
   local dir; dir="$(cat "$tmp")"
   rm -f "$tmp"
   [ -n "$dir" ] && [ -d "$dir" ] && [ "$dir" != "$PWD" ] && cd "$dir"
+  return $status
 }
 ```
 
@@ -56,11 +58,15 @@ chira() {
 function chira
     set -l tmp (mktemp); or return
     command chira --cd-file $tmp $argv
+    set -l status $status
     set -l dir (cat $tmp)
     rm -f $tmp
     test -n "$dir"; and test -d "$dir"; and test "$dir" != "$PWD"; and cd "$dir"
+    return $status
 end
 ```
+
+最後の `return $status` で `chira gc` 等の CLI サブコマンド exit code (errors > 0 で 1、引数誤りで 2) が wrapper の戻り値にそのまま伝播する。TUI 経由で `cd` した場合も、`cd` の成否ではなく chira 本体の exit code が返る。
 
 これで `chira` → ディレクトリへ降りる → `q` 終了、でシェルがそのディレクトリに移動する。直後にシェル標準の `cd -` で元いた場所へ戻れる（`cd` が `OLDPWD` を設定するため）。
 

@@ -44,9 +44,11 @@ Add to your shell startup file (`~/.zshrc` for zsh, `~/.bashrc` for bash):
 chira() {
   local tmp; tmp="$(mktemp)" || return
   command chira --cd-file "$tmp" "$@"
+  local status=$?
   local dir; dir="$(cat "$tmp")"
   rm -f "$tmp"
   [ -n "$dir" ] && [ -d "$dir" ] && [ "$dir" != "$PWD" ] && cd "$dir"
+  return $status
 }
 ```
 
@@ -56,11 +58,15 @@ Or `~/.config/fish/functions/chira.fish` (fish):
 function chira
     set -l tmp (mktemp); or return
     command chira --cd-file $tmp $argv
+    set -l status $status
     set -l dir (cat $tmp)
     rm -f $tmp
     test -n "$dir"; and test -d "$dir"; and test "$dir" != "$PWD"; and cd "$dir"
+    return $status
 end
 ```
+
+`return $status` を最後に置くことで、`chira gc` 等の CLI サブコマンドの exit code (gc は errors > 0 で 1、引数誤りで 2) がそのまま wrapper の戻り値になる。TUI 経由で `cd` した場合も `cd` の成否ではなく chira 本体の exit code を返す。
 
 Now: launch `chira` → descend into a directory → quit with `q`, and your shell moves there. Right after, the shell's standard `cd -` takes you back to where you were (because `cd` sets `OLDPWD`).
 

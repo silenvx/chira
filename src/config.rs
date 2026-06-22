@@ -1,13 +1,16 @@
+use std::env;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+
+use toml_edit::{Array, DocumentMut, value};
 
 use crate::i18n::{self, Lang};
 use crate::scratch::env_path;
 
 /// config.toml から読んだ値。未指定 (キー不在・空文字・型不一致) は None で、
 /// 呼び出し側が env → ハードコード default へフォールバックする。
-#[derive(Default, Debug, PartialEq, Eq)]
+#[derive(Default, Debug, Clone, PartialEq, Eq)]
 pub struct Config {
     pub dir: Option<String>,
     pub editor: Option<String>,
@@ -30,7 +33,7 @@ pub struct Action {
 }
 
 /// `[archive]` セクション。`ttl_days = 0` または未指定で archive 機能 off。
-#[derive(Default, Debug, PartialEq, Eq)]
+#[derive(Default, Debug, Clone, PartialEq, Eq)]
 pub struct ArchiveConfig {
     pub ttl_days: Option<u64>,
     pub dir: Option<String>,
@@ -170,6 +173,201 @@ fn get_str(table: &toml::Table, key: &str) -> Option<String> {
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
         .map(str::to_string)
+}
+
+/// 設定値の出どころ。TUI config 画面で source を表示するために使う。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Source {
+    /// env で上書き中。値は env 変数名 (`CHIRA_DIR` 等)
+    Env(&'static str),
+    Config,
+    /// ハードコード default に倒れている (config 未設定 + env 未設定)
+    Default,
+}
+
+/// 各項目の effective 値 (= 起動時に有効になる値) と source。
+/// `archive.*` 系は env で上書きされる経路がないため、config の値があれば Config、
+/// なければ Default として扱う (明示的 false / 明示的 [] と未指定は Config 構造体側で
+/// 区別していないため、TUI 上は「config 経由か default か」の粒度で表示する)。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Effective {
+    pub dir: (String, Source),
+    pub editor: (String, Source),
+    pub shell: (String, Source),
+    pub archive_ttl_days: (Option<u64>, Source),
+    pub archive_dir: (String, Source),
+    pub archive_on_startup: (bool, Source),
+    pub archive_keep: (Vec<String>, Source),
+}
+
+/// テスト容易性のため env を引数で受け取る純関数。production からは [`effective`] が呼ぶ。
+pub fn resolve_effective(
+    config: &Config,
+    chira_dir: Option<String>,
+    editor_env: Option<String>,
+    shell_env: Option<String>,
+) -> Effective {
+    Effective {
+        dir: pick_string(chira_dir, "CHIRA_DIR", config.dir.clone(), ""),
+        editor: pick_string(editor_env, "EDITOR", config.editor.clone(), "vi"),
+        shell: pick_string(shell_env, "SHELL", config.shell.clone(), "/bin/sh"),
+        archive_ttl_days: match config.archive.ttl_days {
+            Some(v) => (Some(v), Source::Config),
+            None => (None, Source::Default),
+        },
+        archive_dir: match config.archive.dir.clone() {
+            Some(s) => (s, Source::Config),
+            None => (String::new(), Source::Default),
+        },
+        // on_startup / keep の default は false / [] で、明示値との区別は構造体上できないため、
+        // 値そのものが non-default なら Config、default なら Default として表示する。
+        archive_on_startup: if config.archive.on_startup {
+            (true, Source::Config)
+        } else {
+            (false, Source::Default)
+        },
+        archive_keep: if config.archive.keep.is_empty() {
+            (Vec::new(), Source::Default)
+        } else {
+            (config.archive.keep.clone(), Source::Config)
+        },
+    }
+}
+
+/// 現在の env から effective 値を解決する (production 入り口)。
+pub fn effective(config: &Config) -> Effective {
+    resolve_effective(
+        config,
+        env::var("CHIRA_DIR").ok().filter(|s| !s.is_empty()),
+        env::var("EDITOR").ok().filter(|s| !s.is_empty()),
+        env::var("SHELL").ok().filter(|s| !s.is_empty()),
+    )
+}
+
+/// env が非空なら env、次に config、最後にハードコード default を採用する。
+fn pick_string(
+    env_val: Option<String>,
+    env_name: &'static str,
+    config_val: Option<String>,
+    default: &str,
+) -> (String, Source) {
+    if let Some(v) = env_val {
+        return (v, Source::Env(env_name));
+    }
+    if let Some(v) = config_val {
+        return (v, Source::Config);
+    }
+    (default.to_string(), Source::Default)
+}
+
+/// TUI から渡される編集差分。`None` の項目は触らず、`Some(v)` は v で上書きする。
+/// 空文字列は「キーを残したまま空文字 set」ではなく「キーを削除」として扱う
+/// (load 側が空文字を未設定扱いするため、書き戻し側もそれに揃える)。
+#[derive(Default, Debug, Clone, PartialEq, Eq)]
+pub struct ConfigEdit {
+    pub dir: Option<String>,
+    pub editor: Option<String>,
+    pub shell: Option<String>,
+    pub archive_ttl_days: Option<u64>,
+    pub archive_dir: Option<String>,
+    pub archive_on_startup: Option<bool>,
+    pub archive_keep: Option<Vec<String>>,
+}
+
+/// 書き戻し先の config.toml パスを解決する (load と同じ優先順位)。
+/// 解決できる候補が一つも無い場合は None (HOME も XDG も無い極端な環境)。
+pub fn save_path() -> Option<PathBuf> {
+    resolve_path(
+        env_path("CHIRA_CONFIG"),
+        env_path("XDG_CONFIG_HOME"),
+        env_path("HOME"),
+    )
+}
+
+/// 既存 config.toml に編集差分をマージして書き戻す (フォーマット・コメント保持)。
+/// 親ディレクトリは必要に応じて mkdir -p、書き込みは tmp → rename の atomic 経路。
+pub fn save(path: &Path, edit: &ConfigEdit) -> io::Result<()> {
+    let text = match fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e),
+    };
+    let new_text = apply_edit(&text, edit).map_err(io::Error::other)?;
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent)?;
+    }
+    let tmp = tmp_path(path);
+    fs::write(&tmp, new_text)?;
+    fs::rename(&tmp, path)?;
+    Ok(())
+}
+
+/// path に sibling な tmp ファイル名を生成する (atomic rename の中継先)。
+fn tmp_path(path: &Path) -> PathBuf {
+    let mut name = path
+        .file_name()
+        .map(|s| s.to_os_string())
+        .unwrap_or_default();
+    name.push(".tmp");
+    path.with_file_name(name)
+}
+
+/// 既存 TOML テキストに編集差分を適用して文字列で返す (純関数。テストから直接叩く)。
+fn apply_edit(text: &str, edit: &ConfigEdit) -> Result<String, toml_edit::TomlError> {
+    let mut doc: DocumentMut = if text.is_empty() {
+        DocumentMut::new()
+    } else {
+        text.parse()?
+    };
+    set_or_remove_str(doc.as_table_mut(), "dir", edit.dir.as_deref());
+    set_or_remove_str(doc.as_table_mut(), "editor", edit.editor.as_deref());
+    set_or_remove_str(doc.as_table_mut(), "shell", edit.shell.as_deref());
+    if needs_archive_table(edit) {
+        let archive = doc
+            .entry("archive")
+            .or_insert(toml_edit::Item::Table(toml_edit::Table::new()));
+        if let Some(t) = archive.as_table_mut() {
+            if let Some(n) = edit.archive_ttl_days {
+                t.insert("ttl_days", value(n as i64));
+            }
+            if let Some(s) = edit.archive_dir.as_deref() {
+                set_or_remove_str(t, "dir", Some(s));
+            }
+            if let Some(b) = edit.archive_on_startup {
+                t.insert("on_startup", value(b));
+            }
+            if let Some(keep) = edit.archive_keep.as_ref() {
+                let mut arr = Array::new();
+                for s in keep {
+                    arr.push(s.as_str());
+                }
+                t.insert("keep", value(arr));
+            }
+        }
+    }
+    Ok(doc.to_string())
+}
+
+fn needs_archive_table(edit: &ConfigEdit) -> bool {
+    edit.archive_ttl_days.is_some()
+        || edit.archive_dir.is_some()
+        || edit.archive_on_startup.is_some()
+        || edit.archive_keep.is_some()
+}
+
+/// 空文字は「キー削除」、非空は「set」として扱う (load 側の空文字=未設定契約に揃える)。
+fn set_or_remove_str(table: &mut toml_edit::Table, key: &str, val: Option<&str>) {
+    match val {
+        Some("") => {
+            table.remove(key);
+        }
+        Some(s) => {
+            table.insert(key, value(s));
+        }
+        None => {}
+    }
 }
 
 #[cfg(test)]
@@ -468,5 +666,165 @@ mod tests {
         // 壊れた TOML は Err (load 側で warning + default にフォールバックする)
         assert!(parse("dir = ").is_err());
         assert!(parse("[unterminated").is_err());
+    }
+
+    fn cfg(dir: Option<&str>, editor: Option<&str>) -> Config {
+        Config {
+            dir: dir.map(str::to_string),
+            editor: editor.map(str::to_string),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn effective_env_beats_config_beats_default() {
+        let c = cfg(Some("/cfg"), Some("nvim"));
+        let eff = resolve_effective(&c, Some("/env".into()), None, Some("/bin/zsh".into()));
+        assert_eq!(eff.dir, ("/env".to_string(), Source::Env("CHIRA_DIR")));
+        assert_eq!(eff.editor, ("nvim".to_string(), Source::Config));
+        assert_eq!(eff.shell, ("/bin/zsh".to_string(), Source::Env("SHELL")));
+    }
+
+    #[test]
+    fn effective_default_when_nothing_set() {
+        let eff = resolve_effective(&Config::default(), None, None, None);
+        assert_eq!(eff.dir, (String::new(), Source::Default));
+        assert_eq!(eff.editor, ("vi".to_string(), Source::Default));
+        assert_eq!(eff.shell, ("/bin/sh".to_string(), Source::Default));
+    }
+
+    #[test]
+    fn effective_archive_source_reflects_non_default_value() {
+        // archive 系は env 上書き経路を持たないため、source は値が default かどうかで決まる
+        let mut c = Config::default();
+        c.archive.ttl_days = Some(30);
+        c.archive.dir = Some("~/old".into());
+        c.archive.on_startup = true;
+        c.archive.keep = vec!["pinned-*".into()];
+        let eff = resolve_effective(&c, None, None, None);
+        assert_eq!(eff.archive_ttl_days, (Some(30), Source::Config));
+        assert_eq!(eff.archive_dir, ("~/old".to_string(), Source::Config));
+        assert_eq!(eff.archive_on_startup, (true, Source::Config));
+        assert_eq!(
+            eff.archive_keep,
+            (vec!["pinned-*".to_string()], Source::Config)
+        );
+
+        let eff_def = resolve_effective(&Config::default(), None, None, None);
+        assert_eq!(eff_def.archive_ttl_days, (None, Source::Default));
+        assert_eq!(eff_def.archive_dir, (String::new(), Source::Default));
+        assert_eq!(eff_def.archive_on_startup, (false, Source::Default));
+        assert_eq!(eff_def.archive_keep, (Vec::new(), Source::Default));
+    }
+
+    #[test]
+    fn apply_edit_creates_from_empty() {
+        let edit = ConfigEdit {
+            dir: Some("~/scratch".into()),
+            editor: Some("nvim".into()),
+            archive_ttl_days: Some(30),
+            archive_on_startup: Some(true),
+            archive_keep: Some(vec!["pinned-*".into(), "longterm/".into()]),
+            ..Default::default()
+        };
+        let out = apply_edit("", &edit).unwrap();
+        let parsed = parse(&out).unwrap();
+        assert_eq!(parsed.dir.as_deref(), Some("~/scratch"));
+        assert_eq!(parsed.editor.as_deref(), Some("nvim"));
+        assert_eq!(parsed.archive.ttl_days, Some(30));
+        assert!(parsed.archive.on_startup);
+        assert_eq!(parsed.archive.keep, vec!["pinned-*", "longterm/"]);
+    }
+
+    #[test]
+    fn apply_edit_preserves_comments_and_unrelated_keys() {
+        // フォーマット保持: コメント・無関係キー・余白を残したまま 1 キーだけ更新
+        let original = "\
+# top-level comment
+dir = \"/old\"   # inline comment
+editor = \"vi\"
+
+# archive section
+[archive]
+ttl_days = 7   # weekly
+unrelated_key = \"keep me\"
+";
+        let edit = ConfigEdit {
+            editor: Some("nvim".into()),
+            ..Default::default()
+        };
+        let out = apply_edit(original, &edit).unwrap();
+        assert!(out.contains("# top-level comment"));
+        assert!(out.contains("# inline comment"));
+        assert!(out.contains("# archive section"));
+        assert!(out.contains("unrelated_key = \"keep me\""));
+        assert!(out.contains("editor = \"nvim\""));
+        assert!(out.contains("dir = \"/old\""));
+    }
+
+    #[test]
+    fn apply_edit_empty_string_removes_key() {
+        // 空文字 set はキー削除 (load 側の空文字=未設定契約に揃える)
+        let original = "dir = \"/old\"\neditor = \"vi\"\n";
+        let edit = ConfigEdit {
+            dir: Some(String::new()),
+            ..Default::default()
+        };
+        let out = apply_edit(original, &edit).unwrap();
+        assert!(!out.contains("dir ="));
+        assert!(out.contains("editor = \"vi\""));
+    }
+
+    #[test]
+    fn apply_edit_creates_archive_table_when_needed() {
+        let edit = ConfigEdit {
+            archive_ttl_days: Some(14),
+            ..Default::default()
+        };
+        let out = apply_edit("dir = \"/scratch\"\n", &edit).unwrap();
+        let parsed = parse(&out).unwrap();
+        assert_eq!(parsed.archive.ttl_days, Some(14));
+        assert_eq!(parsed.dir.as_deref(), Some("/scratch"));
+    }
+
+    #[test]
+    fn apply_edit_keep_overwrites_array() {
+        // keep は丸ごと置換 (TUI 側で add/remove した結果を渡す前提)
+        let original = "[archive]\nkeep = [\"old-*\"]\n";
+        let edit = ConfigEdit {
+            archive_keep: Some(vec!["new-*".into(), "longterm/".into()]),
+            ..Default::default()
+        };
+        let out = apply_edit(original, &edit).unwrap();
+        let parsed = parse(&out).unwrap();
+        assert_eq!(parsed.archive.keep, vec!["new-*", "longterm/"]);
+        assert!(!parsed.archive.keep.iter().any(|s| s == "old-*"));
+    }
+
+    #[test]
+    fn apply_edit_none_fields_are_noop() {
+        // すべて None なら原文そのまま (改行/空白も維持。差分 0 行)
+        let original = "dir = \"/x\"\n# c\n[archive]\nttl_days = 1\n";
+        let out = apply_edit(original, &ConfigEdit::default()).unwrap();
+        assert_eq!(out, original);
+    }
+
+    #[test]
+    fn save_round_trip_to_disk() {
+        // save → load の往復で値が一致 (atomic write 経路 + parent mkdir の動作確認)
+        let dir = temp_dir();
+        let path = dir.join("nested/config.toml");
+        let edit = ConfigEdit {
+            dir: Some("/scratch".into()),
+            archive_ttl_days: Some(30),
+            archive_keep: Some(vec!["pinned-*".into()]),
+            ..Default::default()
+        };
+        save(&path, &edit).unwrap();
+        let loaded = parse(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(loaded.dir.as_deref(), Some("/scratch"));
+        assert_eq!(loaded.archive.ttl_days, Some(30));
+        assert_eq!(loaded.archive.keep, vec!["pinned-*"]);
+        fs::remove_dir_all(&dir).unwrap();
     }
 }

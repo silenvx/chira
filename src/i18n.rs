@@ -272,6 +272,19 @@ pub fn warn_config_new_template(lang: Lang, key: &str, rendered: &str) -> String
     }
 }
 
+/// `[new]` の template に chrono が解釈できない specifier (`%Q` 等) が含まれていたときの警告。
+/// validate_name 失敗 (warn_config_new_template) とは区別し、ユーザーが specifier 修正に向かえるよう原因を明示する。
+pub fn warn_config_new_template_chrono(lang: Lang, key: &str, raw: &str) -> String {
+    match lang {
+        Lang::Ja => format!(
+            "[new] {key} `{raw}` に chrono が解釈できない strftime 指定子が含まれています — 既定値にフォールバックします"
+        ),
+        Lang::En => format!(
+            "[new] {key} `{raw}` contains a strftime specifier that chrono cannot parse — falling back to the built-in default"
+        ),
+    }
+}
+
 pub fn err_external_launch(lang: Lang, e: &dyn std::fmt::Display) -> String {
     match lang {
         Lang::Ja => format!("外部プロセスの起動に失敗: {e}"),

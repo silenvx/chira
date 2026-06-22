@@ -173,10 +173,11 @@ fn take_valid_template(
         return None;
     }
     // chrono の invalid specifier (`%Q` 等) は Display::fmt が fmt::Error を返し、`to_string()`
-    // 経由だと内部の `expect` で panic する。`write!` 経由で fmt::Error を捕捉して warn + None に倒す
+    // 経由だと内部の `expect` で panic する。`write!` 経由で fmt::Error を捕捉して warn + None に倒す。
+    // chrono error と validate_name error を別 i18n key に分け、ユーザーが原因を識別できるようにする
     let mut rendered = String::new();
     if write!(&mut rendered, "{}", Local::now().format(normalized)).is_err() {
-        warnings.push(i18n::warn_config_new_template(lang, key, normalized));
+        warnings.push(i18n::warn_config_new_template_chrono(lang, key, normalized));
         return None;
     }
     if scratch::validate_name(&rendered).is_ok() {
@@ -889,7 +890,8 @@ mod tests {
         assert!(warnings.is_empty());
     }
 
-    /// 未知 chrono specifier (`%Q` 等) は panic させず warn + default にフォールバック
+    /// 未知 chrono specifier (`%Q` 等) は panic させず warn + default にフォールバック。
+    /// warning は chrono 専用 i18n を使い、name 安全条件 warning と区別する (debate-review #24 で指摘)
     #[test]
     fn parse_new_invalid_chrono_specifier_warns_without_panic() {
         let (config, warnings) = parse(
@@ -903,6 +905,9 @@ mod tests {
         assert!(config.new.name_template.is_none());
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].contains("name_template"));
+        // chrono error は専用 i18n を使うため "strftime specifier" を含み、name 安全条件キーワードは含まない
+        assert!(warnings[0].contains("strftime"));
+        assert!(!warnings[0].contains("not a valid name"));
         assert_eq!(config.new.file_template(), DEFAULT_NEW_FILE_TEMPLATE);
     }
 

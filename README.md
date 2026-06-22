@@ -109,10 +109,11 @@ name_template = "memo-%Y-%m-%d_%H%M%S.md"   # used when `chira new` is called wi
 dir_template  = "memo-%Y-%m-%d_%H%M%S"      # used when `chira mkdir` is called without a name
 ```
 
-- Any `chrono` format specifier ( https://docs.rs/chrono/latest/chrono/format/strftime/ ) is accepted; the result is the literal entry name on disk.
+- Any `chrono` format specifier ( https://docs.rs/chrono/latest/chrono/format/strftime/ ) is accepted; the result is the entry name on disk.
+- Leading/trailing whitespace is trimmed before use; a whitespace-only value is treated as unset.
 - Unset or empty values fall back to the built-in defaults above.
 - The TUI placeholders for `n` (new file) and `N` (new directory) use the same templates, so CLI and TUI stay in sync.
-- If a template renders to a name that fails `chira`'s safety check (empty, contains `/`, or starts with `.`), a warning is printed at startup and the default is used instead.
+- If a template renders to a name that fails `chira`'s safety check (empty, contains `/`, or starts with `.`), or contains a `chrono` specifier that cannot be parsed (e.g. `%Q`), a warning is printed at startup and the default is used instead.
 
 ### Editing from the TUI
 
@@ -203,7 +204,7 @@ Running `chira` with no arguments launches the TUI. Pass a subcommand to run a o
 | `chira ls [<path>]` | (list view) | One name per line; `-l` prints `<mtime>\t<size>\t<name>` |
 | `chira tree [<path>]` | (right pane) | Tree view (depth 4, up to 100 lines) |
 | `chira new [<name>]` | `n` | Create a file and open `$EDITOR`; `--no-edit` skips the editor. When `<name>` is omitted, the name is generated from `[new] name_template` (default `scratch-%Y%m%d-%H%M%S.md`) |
-| `chira mkdir [<name>]` | `N` | Create a directory. When `<name>` is omitted, defaults to `scratch-%Y%m%d-%H%M%S` |
+| `chira mkdir [<name>]` | `N` | Create a directory. When `<name>` is omitted, the name is generated from `[new] dir_template` (default `scratch-%Y%m%d-%H%M%S`) |
 | `chira edit <name>` | `e` | Open `<name>` in `$EDITOR` |
 | `chira shell [<dir>]` | `s` | Open `$SHELL` in `<dir>` (or in `CHIRA_DIR` if omitted) |
 | `chira rm <name>` | `d` | Delete; `-r` is required for directories, `-f` skips confirmation |

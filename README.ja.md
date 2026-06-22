@@ -109,10 +109,11 @@ name_template = "memo-%Y-%m-%d_%H%M%S.md"   # `chira new` の name 省略時
 dir_template  = "memo-%Y-%m-%d_%H%M%S"      # `chira mkdir` の name 省略時
 ```
 
-- `chrono` のフォーマット指定子 ( https://docs.rs/chrono/latest/chrono/format/strftime/ ) がそのまま使え、評価結果がそのまま実際の name になる。
+- `chrono` のフォーマット指定子 ( https://docs.rs/chrono/latest/chrono/format/strftime/ ) がそのまま使え、評価結果が実際の name になる。
+- 前後の空白は trim される (空白のみの値は未設定扱い)。
 - 未設定 / 空文字なら上記のハードコード default にフォールバックする。
 - TUI の `n` (新規ファイル) / `N` (新規ディレクトリ) の placeholder も同じテンプレを参照するため、CLI と TUI で挙動が揃う。
-- 評価結果が name の安全条件 (空・`/` 含み・先頭 `.` のいずれか) に該当すると起動時に警告を出して default にフォールバックする。
+- 評価結果が name の安全条件 (空・`/` 含み・先頭 `.` のいずれか) に該当する場合、または `chrono` が解釈できない specifier (`%Q` 等) を含む場合は、起動時に警告を出して default にフォールバックする。
 
 ## アクション（作成と同時にコマンドを走らせる）
 
@@ -202,7 +203,7 @@ vim と同じく `h`/`j`/`k`/`l` で移動（`h`=親、`l`=開く）でき、方
 | `chira ls [<path>]` | （一覧表示） | 1 行 1 件で名前のみ。`-l` で `<mtime>\t<size>\t<name>` |
 | `chira tree [<path>]` | （右ペイン） | `tree` 風表示（深さ 4・最大 100 行） |
 | `chira new [<name>]` | `n` | 新規ファイル作成 + `$EDITOR` で開く（`--no-edit` でエディタを開かない、`<name>` 省略時は `[new] name_template` で評価。default は `scratch-%Y%m%d-%H%M%S.md`） |
-| `chira mkdir [<name>]` | `N` | 新規ディレクトリ作成（`<name>` 省略時は `scratch-%Y%m%d-%H%M%S`） |
+| `chira mkdir [<name>]` | `N` | 新規ディレクトリ作成（`<name>` 省略時は `[new] dir_template` で評価。default は `scratch-%Y%m%d-%H%M%S`） |
 | `chira edit <name>` | `e` | `<name>` を `$EDITOR` で開く |
 | `chira shell [<dir>]` | `s` | `<dir>`（省略時は `CHIRA_DIR`）で `$SHELL` を開く |
 | `chira rm <name>` | `d` | 削除。ディレクトリは `-r` 必須、`-f` で確認スキップ |

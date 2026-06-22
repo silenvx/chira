@@ -318,7 +318,9 @@ pub fn write_bootstrap_failed(dir: &Path, action_name: &str, exit_code: i32) -> 
 }
 
 /// `path` (dir) 配下の bootstrap-failed sentinel を削除する (存在しなければ no-op)。
-/// アクション成功時に retry でクリアする用途。
+/// 新規 dir 作成時にコピーや path traversal で既に sentinel が残っていた場合を
+/// アクション成功時にクリアする想定 (typical 経路は create_dir が既存 dir を reject
+/// するため新規 dir では sentinel 不在で no-op、defensive clear)。
 pub fn clear_bootstrap_failed(dir: &Path) -> io::Result<()> {
     let sentinel = dir.join(BOOTSTRAP_FAILED_PATH);
     match fs::remove_file(&sentinel) {

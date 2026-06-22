@@ -117,10 +117,15 @@ run = "git clone --depth 1 git@github.com:me/sandbox.git ."
 # Delegate interpolation to a dedicated generator
 [actions.from-copier]
 run = "copier copy --trust ~/.config/chira/templates/app \"$CHIRA_TARGET\""
+```
 
-# Optional: make `N` (plain new directory) auto-run this action.
-# Default-off; with this set, `N` becomes the same flow as `t` → <name>.
+Optional: make `N` (plain new directory) auto-run a specific action. Default-off; with this set, `N` becomes the same flow as `t` → `<name>`. **Place `default_action` before any `[actions.*]` table** so TOML parses it as a root-level key (otherwise it becomes a key inside the preceding `[actions.<name>]` table and is silently ignored):
+
+```toml
 default_action = "nix-sandbox"
+
+[actions.nix-sandbox]
+# ...
 ```
 
 - `description` is shown in the picker (optional). `run` is required; entries with missing/empty `run` are silently skipped.
@@ -130,7 +135,7 @@ default_action = "nix-sandbox"
   - `CHIRA_TARGET` — absolute path of the new directory
   - `CHIRA_TARGET_NAME` — directory name
   - `CHIRA_ROOT` — scratch root (`$CHIRA_DIR`)
-- On a non-zero exit, the directory is **kept** (no auto-rollback — diagnostic state may be useful) and `.chira/bootstrap-failed` is written inside it. The list shows `[!]` in front of those directories so you can spot the half-provisioned ones. Re-running an action against the same directory clears the marker on success.
+- On a non-zero exit, the directory is **kept** (no auto-rollback — diagnostic state may be useful) and `.chira/bootstrap-failed` is written inside it. The list shows `[!]` in front of those directories so you can spot the half-provisioned ones. To retry, delete the directory with `d` and re-run the action (chira always creates a fresh directory and refuses an existing name); alternatively, remove `.chira/bootstrap-failed` manually to clear the marker without re-running.
 - `default_action = "<name>"` makes the plain `N` key go through the same picker-less confirm + run flow. With it unset (default), `N` keeps creating an empty directory. An unknown name silently falls back to the plain-`N` behavior.
 
 ## Language

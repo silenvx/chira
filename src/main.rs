@@ -11,7 +11,7 @@ use std::env;
 use std::fs;
 use std::io;
 use std::os::unix::ffi::OsStrExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use ratatui::DefaultTerminal;
@@ -210,15 +210,7 @@ fn run_external(
             command,
             action_name,
         } => external::spawn_run(dir, root, command).map(|status| {
-            // 失敗 (exit != 0、シグナル終了含む) は sentinel を書いて一覧で `[!]` 表示する。
-            // 成功なら既存の sentinel を消して retry のクリアを行う。失敗 dir を残す方針 (auto-rollback しない)
-            // の下で「半端な状態」を一覧から見分けるための装置。sentinel I/O 自体の失敗は best-effort で握り潰す。
-            let code = external::exit_code_from_status(status);
-            if code == 0 {
-                let _ = scratch::clear_bootstrap_failed(dir);
-            } else {
-                let _ = scratch::write_bootstrap_failed(dir, action_name, code);
-            }
+            finalize_run_outcome(dir, action_name, external::exit_code_from_status(status));
         }),
     };
 
@@ -226,6 +218,19 @@ fn run_external(
     execute!(io::stdout(), EnterAlternateScreen)?;
     terminal.clear()?;
     result
+}
+
+/// Pending::Run 完了後の sentinel 制御 (Phase 2 の core 契約)。
+/// 失敗 (exit != 0、シグナル終了含む) は sentinel を書いて一覧で `[!]` 表示する。
+/// 成功なら既存の sentinel を念のためクリアする (典型経路では新規 dir のため no-op、
+/// 何らかの理由で stale sentinel が残った場合の defensive clear)。
+/// sentinel I/O 自体の失敗は best-effort で握り潰す (sentinel は診断用で表示の遅延が許容)。
+fn finalize_run_outcome(dir: &Path, action_name: &str, exit_code: i32) {
+    if exit_code == 0 {
+        let _ = scratch::clear_bootstrap_failed(dir);
+    } else {
+        let _ = scratch::write_bootstrap_failed(dir, action_name, exit_code);
+    }
 }
 
 #[cfg(test)]
@@ -275,5 +280,41 @@ mod tests {
         // (parse_args に委ねて未知フラグを exit 2 で reject させる。silent skip は subcommand 誤起動の原因)
         assert_eq!(first_non_flag_index(&args(&["--unknown", "ls"])), None);
         assert_eq!(first_non_flag_index(&args(&["--help", "ls"])), None);
+    }
+
+    /// Phase 2 の e2e 契約: spawn_run の exit code から sentinel の write/clear を呼ぶ。
+    /// 将来 run_external の Pending::Run 分岐をリファクタしたときの regression 検知用。
+    #[test]
+    #[cfg(unix)]
+    fn finalize_run_outcome_writes_or_clears_sentinel_by_exit_code() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static COUNTER: AtomicU32 = AtomicU32::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("chira-finalize-{}-{}", std::process::id(), n));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // 失敗 (exit != 0) → sentinel が書かれる
+        finalize_run_outcome(&dir, "demo", 42);
+        let sentinel = dir.join(scratch::BOOTSTRAP_FAILED_PATH);
+        assert!(sentinel.exists(), "exit != 0 で sentinel が書かれる");
+        let body = std::fs::read_to_string(&sentinel).unwrap();
+        assert!(body.contains("demo"));
+        assert!(body.contains("42"));
+
+        // シグナル終了 (exit_code_from_status が 128+signal を返す経路) も非ゼロとして書かれる
+        finalize_run_outcome(&dir, "demo-sig", 130); // SIGINT
+        let body = std::fs::read_to_string(&sentinel).unwrap();
+        assert!(body.contains("demo-sig"));
+        assert!(body.contains("130"));
+
+        // 成功 (exit == 0) → sentinel が消える (stale が残っていればクリア、不在なら no-op)
+        finalize_run_outcome(&dir, "demo-ok", 0);
+        assert!(!sentinel.exists(), "exit == 0 で sentinel がクリアされる");
+
+        // 不在状態からの 成功 → 二重クリアでも panic しない (clear_bootstrap_failed の NotFound no-op)
+        finalize_run_outcome(&dir, "demo-ok2", 0);
+        assert!(!sentinel.exists());
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

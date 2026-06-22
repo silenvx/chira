@@ -117,10 +117,15 @@ run = "git clone --depth 1 git@github.com:me/sandbox.git ."
 # 内容補間は専門ツールに委譲
 [actions.from-copier]
 run = "copier copy --trust ~/.config/chira/templates/app \"$CHIRA_TARGET\""
+```
 
-# 任意: 素の `N` でこのアクションを自動実行する。
-# 既定無効。これを書くと `N` が `t` → <name> と同じ flow になる。
+任意: 素の `N` で特定のアクションを自動実行する。既定無効。これを書くと `N` が `t` → `<name>` と同じ flow になる。**`default_action` は `[actions.*]` table より前に書くこと** (`[actions.*]` の後ろに書くと TOML 仕様で直前のテーブル内 key として解釈され、root の `default_action` には設定されず silently 無視される):
+
+```toml
 default_action = "nix-sandbox"
+
+[actions.nix-sandbox]
+# ...
 ```
 
 - `description` はピッカー表示用（任意）。`run` は必須で、欠落・空文字のエントリは silently スキップされる。
@@ -130,7 +135,7 @@ default_action = "nix-sandbox"
   - `CHIRA_TARGET` — 新ディレクトリの絶対パス
   - `CHIRA_TARGET_NAME` — ディレクトリ名
   - `CHIRA_ROOT` — scratch のルート（`$CHIRA_DIR`）
-- 非ゼロ終了時はディレクトリを**残す**（auto-rollback しない — 部分的な成果や調査情報を捨てない方針）。`.chira/bootstrap-failed` を中に書き、一覧でその dir の先頭に `[!]` を表示するので半端な dir を見分けられる。同じ dir に対してアクションを再実行して成功すれば marker は消える。
+- 非ゼロ終了時はディレクトリを**残す**（auto-rollback しない — 部分的な成果や調査情報を捨てない方針）。`.chira/bootstrap-failed` を中に書き、一覧でその dir の先頭に `[!]` を表示するので半端な dir を見分けられる。retry は `d` で削除してからアクションを再実行する（chira は常に新規 dir を作成し、既存名は reject する）。あるいは `.chira/bootstrap-failed` を手動削除すれば再実行せずに marker だけクリアできる。
 - `default_action = "<name>"` を書くと素の `N` キーもピッカー無しで同じ confirm + run flow に流れる。未設定（既定）なら `N` は従来通り空ディレクトリ作成。存在しないアクション名は silently fallback して従来 `N` の挙動に戻る。
 
 ## 表示言語

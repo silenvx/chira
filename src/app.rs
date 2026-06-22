@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use chrono::Local;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
+use crate::config::Action;
 use crate::i18n::{self, Lang};
 use crate::scratch::{self, Entry};
 
@@ -20,6 +21,10 @@ pub enum Mode {
     Search,
     Input(InputKind),
     ConfirmDelete,
+    /// アクション選択ピッカー (`t`)
+    ActionPick,
+    /// 選択アクションの `run` を実行する前の確認 (信頼ゲート: コマンド全文を表示)
+    ConfirmAction,
     Help,
 }
 
@@ -27,6 +32,12 @@ pub enum Mode {
 pub enum Pending {
     Editor(PathBuf),
     Shell(PathBuf),
+    /// アクションの `run` を新ディレクトリ (dir) 内で実行する。root は CHIRA_ROOT。
+    Run {
+        dir: PathBuf,
+        root: PathBuf,
+        command: String,
+    },
 }
 
 const PREVIEW_MAX_BYTES: u64 = 1 << 20; // 1 MiB
@@ -44,6 +55,14 @@ pub struct App {
     pub pending: Option<Pending>,
     pub should_quit: bool,
     pub lang: Lang,
+    /// config.toml の `[actions.*]` (名前順)。`t` ピッカーで選ぶ。
+    pub actions: Vec<Action>,
+    /// ActionPick 中のカーソル位置 (actions のインデックス)。
+    pub action_cursor: usize,
+    /// 選択中のアクション。name 入力 → ConfirmAction まで持ち回す。
+    selected_action: Option<usize>,
+    /// ConfirmAction で実行する新ディレクトリ名 (name 入力から持ち回す)。
+    pending_name: String,
 }
 
 impl App {
@@ -65,9 +84,23 @@ impl App {
             pending: None,
             should_quit: false,
             lang,
+            actions: Vec::new(),
+            action_cursor: 0,
+            selected_action: None,
+            pending_name: String::new(),
         };
         app.refresh();
         app
+    }
+
+    /// ConfirmAction で表示・実行するアクション (選択中のもの)。
+    pub fn pending_action(&self) -> Option<&Action> {
+        self.selected_action.and_then(|i| self.actions.get(i))
+    }
+
+    /// ConfirmAction で作成しようとしている新ディレクトリ名。
+    pub fn pending_name(&self) -> &str {
+        &self.pending_name
     }
 
     /// cwd を相対表示用に root からの相対パスへ変換する
@@ -120,6 +153,8 @@ impl App {
             Mode::Search => self.on_key_search(key),
             Mode::Input(_) => self.on_key_input(key),
             Mode::ConfirmDelete => self.on_key_confirm(key),
+            Mode::ActionPick => self.on_key_action_pick(key),
+            Mode::ConfirmAction => self.on_key_confirm_action(key),
             // ヘルプは何かキーを押せば閉じる
             Mode::Help => self.mode = Mode::Browse,
         }
@@ -159,6 +194,15 @@ impl App {
             }
             KeyCode::Char('n') => self.begin_input(InputKind::NewFile),
             KeyCode::Char('N') => self.begin_input(InputKind::NewDir),
+            KeyCode::Char('t') => {
+                if self.actions.is_empty() {
+                    self.status = i18n::status_no_actions(self.lang).into();
+                } else {
+                    self.action_cursor = 0;
+                    self.status.clear();
+                    self.mode = Mode::ActionPick;
+                }
+            }
             KeyCode::Char('r') => {
                 if self.selected_entry().is_some() {
                     self.begin_input(InputKind::Rename);
@@ -212,6 +256,9 @@ impl App {
         match key.code {
             KeyCode::Esc => {
                 self.input.clear();
+                // アクション経路の name 入力を中断した場合は選択も解除する
+                // (残すと次の素の N で誤って ConfirmAction に入る)
+                self.selected_action = None;
                 self.mode = Mode::Browse;
             }
             KeyCode::Enter => self.commit_input(),
@@ -239,6 +286,72 @@ impl App {
                 self.mode = Mode::Browse;
             }
             _ => self.mode = Mode::Browse,
+        }
+    }
+
+    fn on_key_action_pick(&mut self, key: KeyEvent) {
+        let len = self.actions.len();
+        match key.code {
+            KeyCode::Esc => self.mode = Mode::Browse,
+            KeyCode::Char('j') | KeyCode::Down => {
+                if len > 0 {
+                    self.action_cursor = (self.action_cursor + 1).min(len - 1);
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.action_cursor = self.action_cursor.saturating_sub(1);
+            }
+            KeyCode::Char('g') | KeyCode::Home => self.action_cursor = 0,
+            KeyCode::Char('G') | KeyCode::End => self.action_cursor = len.saturating_sub(1),
+            KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right => {
+                if self.action_cursor < len {
+                    self.selected_action = Some(self.action_cursor);
+                    self.begin_input(InputKind::NewDir);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn on_key_confirm_action(&mut self, key: KeyEvent) {
+        match key.code {
+            // 実行確定は明示的な y のみ (Enter 等はキャンセル扱い: 任意コマンド実行の誤発火防止)
+            KeyCode::Char('y') => self.run_pending_action(),
+            _ => {
+                self.selected_action = None;
+                self.pending_name.clear();
+                self.mode = Mode::Browse;
+            }
+        }
+    }
+
+    /// ConfirmAction で y を押したとき: 新ディレクトリを作成し、`run` を Pending::Run に積む。
+    fn run_pending_action(&mut self) {
+        self.mode = Mode::Browse;
+        let Some(action) = self
+            .selected_action
+            .and_then(|i| self.actions.get(i))
+            .cloned()
+        else {
+            self.selected_action = None;
+            self.pending_name.clear();
+            return;
+        };
+        let name = std::mem::take(&mut self.pending_name);
+        self.selected_action = None;
+        match scratch::create_dir(&self.cwd, &name) {
+            Ok(path) => {
+                self.search.clear();
+                self.refresh();
+                self.select_by_name(&name);
+                self.status = i18n::status_run_action(self.lang, &action.name);
+                self.pending = Some(Pending::Run {
+                    dir: path,
+                    root: self.root.clone(),
+                    command: action.run,
+                });
+            }
+            Err(e) => self.status = i18n::status_create_failed(self.lang, &e),
         }
     }
 
@@ -310,15 +423,23 @@ impl App {
                 }
                 Err(e) => self.status = i18n::status_create_failed(self.lang, &e),
             },
-            InputKind::NewDir => match scratch::create_dir(&self.cwd, &name) {
-                Ok(_) => {
-                    self.search.clear();
-                    self.refresh();
-                    self.select_by_name(&name);
-                    self.status = i18n::status_created_dir(self.lang, &name);
+            InputKind::NewDir => {
+                if self.selected_action.is_some() {
+                    // アクション経路: ここでは作らず、コマンド全文を確認させてから実行する
+                    self.pending_name = name;
+                    self.mode = Mode::ConfirmAction;
+                } else {
+                    match scratch::create_dir(&self.cwd, &name) {
+                        Ok(_) => {
+                            self.search.clear();
+                            self.refresh();
+                            self.select_by_name(&name);
+                            self.status = i18n::status_created_dir(self.lang, &name);
+                        }
+                        Err(e) => self.status = i18n::status_create_failed(self.lang, &e),
+                    }
                 }
-                Err(e) => self.status = i18n::status_create_failed(self.lang, &e),
-            },
+            }
             InputKind::Rename => {
                 if let Some(entry) = self.selected_entry().cloned() {
                     match scratch::rename(&entry, &name) {
@@ -584,6 +705,136 @@ mod tests {
             return;
         }
         assert!(preview_file(Lang::En, &fifo).contains("special file"));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    fn demo_action(run: &str) -> Action {
+        Action {
+            name: "demo".into(),
+            description: Some("demo action".into()),
+            run: run.into(),
+        }
+    }
+
+    #[test]
+    fn t_with_no_actions_shows_status_and_stays_browse() {
+        let root = temp_root();
+        let mut app = App::with_root(root.clone(), Lang::En);
+        // actions 未設定なら t はピッカーを開かず status を出すだけ
+        app.on_key(key('t'));
+        assert_eq!(app.mode, Mode::Browse);
+        assert!(!app.status.is_empty());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn action_flow_creates_dir_and_requests_run_on_confirm() {
+        let root = temp_root();
+        let mut app = App::with_root(root.clone(), Lang::En);
+        app.actions = vec![demo_action("git init -q")];
+
+        app.on_key(key('t'));
+        assert_eq!(app.mode, Mode::ActionPick);
+        // アクション選択 → 名前入力へ
+        app.on_key(special(KeyCode::Enter));
+        assert!(matches!(app.mode, Mode::Input(InputKind::NewDir)));
+        app.input.clear();
+        typed(&mut app, "ws");
+        // 名前確定 → 確認 (この時点ではまだ作らない)
+        app.on_key(special(KeyCode::Enter));
+        assert_eq!(app.mode, Mode::ConfirmAction);
+        assert!(
+            !root.join("ws").exists(),
+            "confirm 前にディレクトリを作らない"
+        );
+        assert_eq!(app.pending_name(), "ws");
+        assert_eq!(
+            app.pending_action().map(|a| a.run.as_str()),
+            Some("git init -q")
+        );
+
+        // y で作成 + run を Pending に積む
+        app.on_key(key('y'));
+        assert_eq!(app.mode, Mode::Browse);
+        assert!(root.join("ws").is_dir());
+        match app.pending.take() {
+            Some(Pending::Run {
+                dir,
+                root: r,
+                command,
+            }) => {
+                assert!(dir.ends_with("ws"));
+                assert_eq!(r, root);
+                assert_eq!(command, "git init -q");
+            }
+            _ => panic!("confirm の y で Pending::Run を要求するはず"),
+        }
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn action_confirm_cancel_creates_nothing() {
+        let root = temp_root();
+        let mut app = App::with_root(root.clone(), Lang::En);
+        app.actions = vec![demo_action("git init -q")];
+
+        app.on_key(key('t'));
+        app.on_key(special(KeyCode::Enter));
+        app.input.clear();
+        typed(&mut app, "ws");
+        app.on_key(special(KeyCode::Enter));
+        assert_eq!(app.mode, Mode::ConfirmAction);
+        // Esc でキャンセル → 何も作らない・Pending も積まない
+        app.on_key(special(KeyCode::Esc));
+        assert_eq!(app.mode, Mode::Browse);
+        assert!(!root.join("ws").exists());
+        assert!(app.pending.is_none());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn input_esc_clears_action_so_plain_n_makes_empty_dir() {
+        let root = temp_root();
+        let mut app = App::with_root(root.clone(), Lang::En);
+        app.actions = vec![demo_action("true")];
+
+        // t → 選択 → name 入力中に Esc
+        app.on_key(key('t'));
+        app.on_key(special(KeyCode::Enter));
+        assert!(matches!(app.mode, Mode::Input(InputKind::NewDir)));
+        app.on_key(special(KeyCode::Esc));
+        assert_eq!(app.mode, Mode::Browse);
+
+        // 素の N は ConfirmAction に入らず空ディレクトリを作る (選択が残っていない証拠)
+        app.on_key(key('N'));
+        app.input.clear();
+        typed(&mut app, "plain");
+        app.on_key(special(KeyCode::Enter));
+        assert_eq!(app.mode, Mode::Browse);
+        assert!(root.join("plain").is_dir());
+        assert!(app.pending.is_none());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn renders_action_modes_without_panic() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let root = temp_root();
+        let mut app = App::with_root(root.clone(), Lang::En);
+        app.actions = vec![demo_action("git init -q")];
+        let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
+
+        app.on_key(key('t'));
+        term.draw(|f| crate::ui::render(f, &app)).unwrap(); // ActionPick
+        app.on_key(special(KeyCode::Enter));
+        app.input.clear();
+        typed(&mut app, "ws");
+        app.on_key(special(KeyCode::Enter));
+        assert_eq!(app.mode, Mode::ConfirmAction);
+        term.draw(|f| crate::ui::render(f, &app)).unwrap(); // ConfirmAction
+
         std::fs::remove_dir_all(&root).unwrap();
     }
 }

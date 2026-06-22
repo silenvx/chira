@@ -13,6 +13,16 @@ pub struct Config {
     pub editor: Option<String>,
     pub shell: Option<String>,
     pub archive: ArchiveConfig,
+    pub actions: Vec<Action>,
+}
+
+/// `[actions.<name>]` の 1 エントリ。`t` で選んで新ディレクトリ内で `run` を foreground 実行する。
+/// コピーもクローンも生成も `run` の中の shell コマンド (rsync / git clone / script) で表現する。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Action {
+    pub name: String,
+    pub description: Option<String>,
+    pub run: String,
 }
 
 /// `[archive]` セクション。`ttl_days = 0` または未指定で archive 機能 off。
@@ -87,7 +97,34 @@ fn parse(text: &str) -> Result<Config, toml::de::Error> {
         editor: get_str(&table, "editor"),
         shell: get_str(&table, "shell"),
         archive: parse_archive(table.get("archive").and_then(|v| v.as_table())),
+        actions: parse_actions(table.get("actions").and_then(|v| v.as_table())),
     })
+}
+
+/// `[actions.*]` をパースする。`run` が非空文字列のエントリのみ採用し、名前順にソートする。
+/// `run` 欠落・空・型不一致のエントリは無効として黙って除外する (keep[] と同じ要素単位フィルタ方針)。
+fn parse_actions(table: Option<&toml::Table>) -> Vec<Action> {
+    let Some(t) = table else {
+        return Vec::new();
+    };
+    let mut actions: Vec<Action> = t
+        .iter()
+        .filter_map(|(name, value)| {
+            let tbl = value.as_table()?;
+            let run = tbl
+                .get("run")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())?
+                .to_string();
+            Some(Action {
+                name: name.clone(),
+                description: get_str(tbl, "description"),
+                run,
+            })
+        })
+        .collect();
+    actions.sort_by(|a, b| a.name.cmp(&b.name));
+    actions
 }
 
 fn parse_archive(table: Option<&toml::Table>) -> ArchiveConfig {
@@ -319,6 +356,60 @@ mod tests {
         // u64 へ収まらない値 (負値) は未設定扱い (誤って off 化を防ぐため None で返す)
         let config = parse("[archive]\nttl_days = -1").unwrap();
         assert_eq!(config.archive.ttl_days, None);
+    }
+
+    #[test]
+    fn parse_extracts_actions_sorted_by_name() {
+        let config = parse(
+            r#"
+            [actions.rust]
+            description = "rust skeleton"
+            run = "rsync -a ~/.config/chira/skel/rust/ ./ && cargo init -q"
+
+            [actions.clone]
+            run = "git clone --depth 1 git@example.com:me/sandbox.git ."
+            "#,
+        )
+        .unwrap();
+        // 名前順 (clone < rust) でソートされる
+        assert_eq!(config.actions.len(), 2);
+        assert_eq!(config.actions[0].name, "clone");
+        assert_eq!(config.actions[0].description, None);
+        assert!(config.actions[0].run.starts_with("git clone"));
+        assert_eq!(config.actions[1].name, "rust");
+        assert_eq!(
+            config.actions[1].description.as_deref(),
+            Some("rust skeleton")
+        );
+    }
+
+    #[test]
+    fn parse_actions_skips_entries_without_run() {
+        // run 欠落・空・非文字列は無効として除外する
+        let config = parse(
+            r#"
+            [actions.ok]
+            run = "git init -q"
+
+            [actions.no_run]
+            description = "missing run"
+
+            [actions.empty_run]
+            run = ""
+
+            [actions.bad_type]
+            run = 42
+            "#,
+        )
+        .unwrap();
+        assert_eq!(config.actions.len(), 1);
+        assert_eq!(config.actions[0].name, "ok");
+    }
+
+    #[test]
+    fn parse_actions_missing_is_empty() {
+        let config = parse("dir = \"/scratch\"").unwrap();
+        assert!(config.actions.is_empty());
     }
 
     #[test]

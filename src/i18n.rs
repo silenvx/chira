@@ -320,6 +320,20 @@ pub fn status_created_dir(lang: Lang, name: &str) -> String {
     }
 }
 
+pub fn status_no_actions(lang: Lang) -> &'static str {
+    match lang {
+        Lang::Ja => "アクションが設定されていません ([actions.*] を config.toml に追加)",
+        Lang::En => "No actions configured (add [actions.*] to config.toml)",
+    }
+}
+
+pub fn status_run_action(lang: Lang, name: &str) -> String {
+    match lang {
+        Lang::Ja => format!("アクション実行: {name}"),
+        Lang::En => format!("Running action: {name}"),
+    }
+}
+
 pub fn status_renamed(lang: Lang) -> &'static str {
     match lang {
         Lang::Ja => "名前を変更しました",
@@ -467,6 +481,27 @@ pub fn confirm_title(lang: Lang) -> &'static str {
     }
 }
 
+pub fn action_pick_title(lang: Lang) -> &'static str {
+    match lang {
+        Lang::Ja => " アクションを選択 ",
+        Lang::En => " Choose action ",
+    }
+}
+
+pub fn confirm_action_prompt(lang: Lang, name: &str) -> String {
+    match lang {
+        Lang::Ja => format!("新規「{name}/」で以下を実行します:"),
+        Lang::En => format!("Run the following in new \"{name}/\":"),
+    }
+}
+
+pub fn confirm_action_run_label(lang: Lang) -> &'static str {
+    match lang {
+        Lang::Ja => ": 実行   ",
+        Lang::En => ": run   ",
+    }
+}
+
 pub fn help_title(lang: Lang) -> &'static str {
     match lang {
         Lang::Ja => " ヘルプ (vim-like) ",
@@ -484,6 +519,7 @@ pub fn help_rows(lang: Lang) -> &'static [(&'static str, &'static str)] {
             ("e", "$EDITOR で開く"),
             ("s", "シェルを開く (実験・agent 実行)"),
             ("n / N", "新規ファイル / ディレクトリ"),
+            ("t", "アクションで新規 (テンプレ/clone/script)"),
             ("r", "名前を変更"),
             ("d", "削除 (確認あり)"),
             ("/", "名前で絞り込み検索"),
@@ -498,6 +534,7 @@ pub fn help_rows(lang: Lang) -> &'static [(&'static str, &'static str)] {
             ("e", "Open in $EDITOR"),
             ("s", "Open shell (experiments / run agents)"),
             ("n / N", "New file / directory"),
+            ("t", "New dir from an action (template/clone/script)"),
             ("r", "Rename"),
             ("d", "Delete (with confirmation)"),
             ("/", "Filter by name"),
@@ -509,8 +546,26 @@ pub fn help_rows(lang: Lang) -> &'static [(&'static str, &'static str)] {
 
 pub fn footer_browse(lang: Lang) -> &'static str {
     match lang {
-        Lang::Ja => "j/k:移動  l:開く  h:親  s:シェル  n:新規  /:検索  ?:ヘルプ  q:終了",
-        Lang::En => "j/k:move  l:open  h:parent  s:shell  n:new  /:filter  ?:help  q:quit",
+        Lang::Ja => {
+            "j/k:移動  l:開く  h:親  s:シェル  n:新規  t:アクション  /:検索  ?:ヘルプ  q:終了"
+        }
+        Lang::En => {
+            "j/k:move  l:open  h:parent  s:shell  n:new  t:action  /:filter  ?:help  q:quit"
+        }
+    }
+}
+
+pub fn footer_action_pick(lang: Lang) -> &'static str {
+    match lang {
+        Lang::Ja => "j/k:移動  Enter:選択  Esc:キャンセル",
+        Lang::En => "j/k:move  Enter:select  Esc:cancel",
+    }
+}
+
+pub fn footer_confirm_action(lang: Lang) -> &'static str {
+    match lang {
+        Lang::Ja => "y:実行  n/Esc:キャンセル",
+        Lang::En => "y:run  n/Esc:cancel",
     }
 }
 

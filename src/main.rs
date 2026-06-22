@@ -60,6 +60,7 @@ fn main() -> io::Result<()> {
         eprintln!("{}", i18n::err_gc_sweep(lang, &e));
     }
     let mut app = App::new(config.dir.as_deref())?;
+    app.actions = config.actions.clone();
     let mut terminal = ratatui::init();
     let result = run(&mut terminal, &mut app, &config);
     ratatui::restore();
@@ -198,6 +199,7 @@ fn run_external(
         Pending::Shell(dir) => {
             external::spawn_shell(lang, dir, config.shell.as_deref()).map(|_| ())
         }
+        Pending::Run { dir, root, command } => external::spawn_run(dir, root, command).map(|_| ()),
     };
 
     enable_raw_mode()?;

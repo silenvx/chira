@@ -24,6 +24,10 @@ pub fn render(frame: &mut Frame, app: &App) {
         render_input(frame, app, kind, body);
     } else if app.mode == Mode::ConfirmDelete {
         render_confirm(frame, app, body);
+    } else if app.mode == Mode::ActionPick {
+        render_action_pick(frame, app, body);
+    } else if app.mode == Mode::ConfirmAction {
+        render_confirm_action(frame, app, body);
     } else if app.mode == Mode::Help {
         render_help(frame, app, body);
     }
@@ -155,6 +159,69 @@ fn render_confirm(frame: &mut Frame, app: &App, area: Rect) {
     );
 }
 
+fn render_action_pick(frame: &mut Frame, app: &App, area: Rect) {
+    let items: Vec<ListItem> = app
+        .actions
+        .iter()
+        .map(|a| {
+            let mut spans = vec![Span::styled(
+                a.name.clone(),
+                Style::new().fg(Color::Blue).bold(),
+            )];
+            if let Some(desc) = &a.description {
+                spans.push(Span::raw("  "));
+                spans.push(Span::styled(desc.clone(), Style::new().fg(Color::Gray)));
+            }
+            ListItem::new(Line::from(spans))
+        })
+        .collect();
+
+    let popup = centered(area, 60, app.actions.len() as u16 + 2);
+    frame.render_widget(Clear, popup);
+    let list = List::new(items)
+        .block(
+            Block::bordered()
+                .title(i18n::action_pick_title(app.lang))
+                .border_style(Color::Cyan),
+        )
+        .highlight_style(Style::new().add_modifier(Modifier::REVERSED))
+        .highlight_symbol("› ");
+    let mut state = ListState::default();
+    if !app.actions.is_empty() {
+        state.select(Some(app.action_cursor));
+    }
+    frame.render_stateful_widget(list, popup, &mut state);
+}
+
+fn render_confirm_action(frame: &mut Frame, app: &App, area: Rect) {
+    let command = app
+        .pending_action()
+        .map(|a| a.run.clone())
+        .unwrap_or_default();
+    let name = app.pending_name();
+    let popup = centered(area, 64, 6);
+    frame.render_widget(Clear, popup);
+    let text = vec![
+        Line::raw(i18n::confirm_action_prompt(app.lang, name)),
+        Line::from(Span::styled(command, Style::new().fg(Color::Yellow))),
+        Line::raw(""),
+        Line::from(vec![
+            Span::styled("y", Style::new().fg(Color::Red).bold()),
+            Span::raw(i18n::confirm_action_run_label(app.lang)),
+            Span::styled("n/Esc", Style::new().fg(Color::Green).bold()),
+            Span::raw(i18n::confirm_cancel_label(app.lang)),
+        ]),
+    ];
+    frame.render_widget(
+        Paragraph::new(text).wrap(Wrap { trim: false }).block(
+            Block::bordered()
+                .title(i18n::confirm_title(app.lang))
+                .border_style(Color::Red),
+        ),
+        popup,
+    );
+}
+
 fn render_help(frame: &mut Frame, app: &App, area: Rect) {
     let keys = i18n::help_rows(app.lang);
     let lines: Vec<Line> = keys
@@ -181,6 +248,8 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
         Mode::Search => i18n::footer_search(app.lang),
         Mode::Input(_) => i18n::footer_input(app.lang),
         Mode::ConfirmDelete => i18n::footer_confirm(app.lang),
+        Mode::ActionPick => i18n::footer_action_pick(app.lang),
+        Mode::ConfirmAction => i18n::footer_confirm_action(app.lang),
         Mode::Help => i18n::footer_help_close(app.lang),
     };
     let line = if app.status.is_empty() {

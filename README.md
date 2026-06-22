@@ -175,7 +175,7 @@ chira gc --archive-dir ~/old    # move to a custom location
 
 Time units: `s` / `m` / `h` / `d` / `w` (no unit defaults to seconds). The TTL is required — `chira gc` exits with an error if neither `--ttl` nor `[archive] ttl_days` is set, so an unconfigured invocation never erases anything by surprise.
 
-The mtime is read from the entry itself (`symlink_metadata`, so symlinks are aged by the link itself, not the target). atime is not used because relatime / noatime mounts do not update it.
+The mtime is read from the entry itself (`symlink_metadata`, so intact symlinks are aged by the link itself, not the target). atime is not used because relatime / noatime mounts do not update it. Dangling symlinks (target missing) are treated as "mtime cannot be read" — they are tracked under `errors`, not aged by the link.
 
 ### Exclusions
 

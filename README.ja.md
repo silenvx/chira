@@ -175,7 +175,7 @@ chira gc --archive-dir ~/old    # archive 先を別の場所にする
 
 時間単位: `s` / `m` / `h` / `d` / `w`（単位なしは秒）。TTL は必須で、`--ttl` も `[archive] ttl_days` も無いと `chira gc` はエラーで終了する（未設定で実行して全消えする事故を防ぐため）。
 
-判定はエントリ自身の `mtime` のみ（`symlink_metadata` を使うため symlink はリンク自体の寿命で判定、リンク先は見ない）。relatime / noatime mount では atime が更新されないため atime は使わない。
+判定はエントリ自身の `mtime` のみ（`symlink_metadata` を使うため、正常な symlink はリンク自体の寿命で判定、リンク先は見ない）。relatime / noatime mount では atime が更新されないため atime は使わない。target が存在しない dangling symlink は「mtime 取れない」扱いで `errors` に積まれ、リンク自身の mtime では判定しない (broken symlink を意図せず archive しないため)。
 
 ### 対象外
 

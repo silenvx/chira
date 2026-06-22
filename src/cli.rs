@@ -153,7 +153,12 @@ fn cmd_gc(lang: Lang, config: &Config, args: Vec<String>) -> i32 {
         }
         println!(
             "{}",
-            i18n::gc_summary_dry_run(lang, report.archived.len(), report.kept)
+            i18n::gc_summary_dry_run(
+                lang,
+                report.archived.len(),
+                report.kept,
+                report.errors.len()
+            )
         );
     } else {
         for o in &report.archived {
@@ -176,7 +181,8 @@ fn cmd_gc(lang: Lang, config: &Config, args: Vec<String>) -> i32 {
 }
 
 /// archive 先の解決順: CLI flag > config dir > <CHIRA_DIR>/.archive。
-/// CLI / config 双方 `~` は HOME へ展開 (シェル非経由起動 / quoted `'~/old'` を一様に扱う)
+/// CLI / config 双方 `~` は HOME へ展開 (シェル非経由起動 / quoted `'~/old'` を一様に扱う)。
+/// 相対 path は current_dir で絶対化 (detect_archive_root_conflict の比較が機能するため)
 fn resolve_archive_dir(
     root: &Path,
     config_dir: Option<&str>,
@@ -185,13 +191,18 @@ fn resolve_archive_dir(
     let home = std::env::var_os("HOME")
         .filter(|v| !v.is_empty())
         .map(PathBuf::from);
-    if let Some(p) = cli {
-        return scratch::expand_tilde(&p.to_string_lossy(), home.as_deref());
+    let resolved = if let Some(p) = cli {
+        scratch::expand_tilde(&p.to_string_lossy(), home.as_deref())?
+    } else if let Some(s) = config_dir.filter(|s| !s.is_empty()) {
+        scratch::expand_tilde(s, home.as_deref())?
+    } else {
+        return Ok(root.join(archive::DEFAULT_ARCHIVE_DIRNAME));
+    };
+    if resolved.is_absolute() {
+        Ok(resolved)
+    } else {
+        Ok(std::env::current_dir()?.join(resolved))
     }
-    if let Some(s) = config_dir.filter(|s| !s.is_empty()) {
-        return scratch::expand_tilde(s, home.as_deref());
-    }
-    Ok(root.join(archive::DEFAULT_ARCHIVE_DIRNAME))
 }
 
 fn cmd_ls(lang: Lang, config: &Config, args: Vec<String>) -> i32 {
@@ -737,13 +748,37 @@ mod tests {
     #[test]
     fn is_subcommand_matches_known() {
         for s in [
-            "ls", "tree", "new", "mkdir", "edit", "shell", "rm", "mv", "path", "find",
+            "ls", "tree", "new", "mkdir", "edit", "shell", "rm", "mv", "path", "find", "gc",
+            "archive",
         ] {
             assert!(is_subcommand(s), "expected {s} to be a subcommand");
         }
         assert!(!is_subcommand(""));
         assert!(!is_subcommand("status"));
         assert!(!is_subcommand("--cd-file"));
+    }
+
+    #[test]
+    fn cmd_gc_returns_2_when_ttl_missing() {
+        // TTL は --ttl も config.archive.ttl_days も無いと exit 2 (誤って全消えを防ぐ契約)
+        let root = temp_root();
+        // CHIRA_DIR を test-local に向けて scratch::root が安全に呼べる状態にする
+        let prev = std::env::var_os("CHIRA_DIR");
+        // SAFETY: 環境変数操作は test 内に閉じ、後で復帰する
+        unsafe {
+            std::env::set_var("CHIRA_DIR", &root);
+        }
+        let config = Config::default(); // archive.ttl_days = None
+        let code = cmd_gc(Lang::En, &config, vec![]);
+        assert_eq!(code, 2);
+        // 後始末
+        unsafe {
+            match prev {
+                Some(v) => std::env::set_var("CHIRA_DIR", v),
+                None => std::env::remove_var("CHIRA_DIR"),
+            }
+        }
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

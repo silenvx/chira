@@ -83,7 +83,15 @@ fn run_startup_sweep(lang: i18n::Lang, config: &Config) -> io::Result<()> {
         .filter(|v| !v.is_empty())
         .map(PathBuf::from);
     let archive_dir = match archive_dir_str.filter(|s| !s.is_empty()) {
-        Some(s) => scratch::expand_tilde(s, home.as_deref())?,
+        Some(s) => {
+            let resolved = scratch::expand_tilde(s, home.as_deref())?;
+            // 相対 path は detect_archive_root_conflict の比較が機能するよう絶対化
+            if resolved.is_absolute() {
+                resolved
+            } else {
+                env::current_dir()?.join(resolved)
+            }
+        }
         None => root.join(archive::DEFAULT_ARCHIVE_DIRNAME),
     };
     let opts = archive::Options {

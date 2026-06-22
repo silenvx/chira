@@ -191,9 +191,9 @@ fn lexical_normalize(path: &Path) -> PathBuf {
     out
 }
 
-/// エントリが archive_dir 自身、もしくはその配下かを判定する。
-/// canonical path での比較で、basename 一致だけの外部 archive_dir 誤判定を防ぐ。
-/// canonicalize 失敗 (archive_dir 未作成等) 時は path prefix 比較に fallback する
+/// エントリが archive_dir 自身/その配下、または祖先かを判定する (祖先 = entry が archive_dir を内包する場合)。
+/// 祖先扱いも skip するのは、root 直下の dir 配下に archive_dir がある構成で、その親 dir を archive すると
+/// archive_dir も巻き込まれてしまう経路を防ぐため。canonical path 比較、失敗時は path prefix fallback
 fn is_under_archive(entry: &Path, archive_dir: &Path, archive_canonical: Option<&Path>) -> bool {
     if let Some(canon) = archive_canonical
         && let Ok(entry_canon) = entry.canonicalize()

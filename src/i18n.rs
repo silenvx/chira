@@ -210,10 +210,12 @@ pub fn gc_summary(lang: Lang, archived: usize, kept: usize, errors: usize) -> St
     }
 }
 
-pub fn gc_summary_dry_run(lang: Lang, candidates: usize, kept: usize) -> String {
+pub fn gc_summary_dry_run(lang: Lang, candidates: usize, kept: usize, errors: usize) -> String {
     match lang {
-        Lang::Ja => format!("dry-run: {candidates} 件が候補 / {kept} 件は対象外"),
-        Lang::En => format!("dry-run: {candidates} candidate(s) / {kept} kept"),
+        Lang::Ja => {
+            format!("dry-run: {candidates} 件が候補 / {kept} 件は対象外 / {errors} 件エラー")
+        }
+        Lang::En => format!("dry-run: {candidates} candidate(s) / {kept} kept / {errors} errors"),
     }
 }
 

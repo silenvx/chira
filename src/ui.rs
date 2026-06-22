@@ -193,6 +193,23 @@ fn render_action_pick(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_stateful_widget(list, popup, &mut state);
 }
 
+/// s を inner_w 桁で折返したときの各行を返す (空行は 1 行として保持)。
+/// 概算は char 数ベース (全角は実表示幅で更に折れうるが、ASCII コマンドが主のため許容)。
+fn wrap_rows(s: &str, inner_w: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    for logical in s.split('\n') {
+        let chars: Vec<char> = logical.chars().collect();
+        if chars.is_empty() {
+            out.push(String::new());
+        } else {
+            for chunk in chars.chunks(inner_w.max(1)) {
+                out.push(chunk.iter().collect());
+            }
+        }
+    }
+    out
+}
+
 fn render_confirm_action(frame: &mut Frame, app: &App, area: Rect) {
     let command = app
         .pending_action()
@@ -200,28 +217,20 @@ fn render_confirm_action(frame: &mut Frame, app: &App, area: Rect) {
         .unwrap_or_default();
     let name = app.pending_name();
 
-    // 信頼ゲートはコマンド全文を見せるのが要件。固定高だと長い / 複数行 run でコマンドや
-    // 操作行 (y/n) がクリップされるため、コマンドの折返し行数からポップアップ高さを算出する。
+    // 信頼ゲートはコマンド全文と操作行を必ず見せるのが要件。固定高だと長い dir 名で折返す
+    // prompt 行や長い / 複数行 run でコマンド・操作行がクリップされるため、prompt と command
+    // 両方の折返し行数からポップアップ高さを算出する。
     let width = 72.min(area.width.saturating_sub(2)).max(20);
     let inner_w = (width as usize).saturating_sub(2).max(1);
-    let mut cmd_lines: Vec<String> = Vec::new();
-    for logical in command.split('\n') {
-        let chars: Vec<char> = logical.chars().collect();
-        if chars.is_empty() {
-            cmd_lines.push(String::new());
-        } else {
-            for chunk in chars.chunks(inner_w) {
-                cmd_lines.push(chunk.iter().collect());
-            }
-        }
-    }
-    // 内側 = prompt 1 + command N + 空行 1 + 操作行 1、border 上下 2 を足し area に cap する
-    let height = (cmd_lines.len() as u16 + 5).min(area.height);
+    let prompt_lines = wrap_rows(&i18n::confirm_action_prompt(app.lang, name), inner_w);
+    let cmd_lines = wrap_rows(&command, inner_w);
+    // 内側 = prompt N + command M + 空行 1 + 操作行 1、border 上下 2 を足し area に cap する
+    let height = ((prompt_lines.len() + cmd_lines.len()) as u16 + 4).min(area.height);
 
     let popup = centered(area, width, height);
     frame.render_widget(Clear, popup);
 
-    let mut text = vec![Line::raw(i18n::confirm_action_prompt(app.lang, name))];
+    let mut text: Vec<Line> = prompt_lines.into_iter().map(Line::raw).collect();
     for l in cmd_lines {
         text.push(Line::from(Span::styled(l, Style::new().fg(Color::Yellow))));
     }

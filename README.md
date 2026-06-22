@@ -8,6 +8,24 @@ It handles not only note files but also "directories where you try running somet
 
 *chirashi no ura* (チラシの裏) literally means "the back of a flyer" — in Japan, the throwaway surface you scribble worthless little things on. The name *chira* comes from 散らす (*chirasu*, "to scatter") → チラシ (*chirashi*, a flyer).
 
+## Screen
+
+The Browse screen right after launch looks like this (list on the left, preview or directory contents of the selection on the right, key hints on the bottom line). The middle header segment (`chira`) is the path relative to CHIRA_DIR root and expands like `chira/foo` once you descend into a subdirectory. The right-pane tree starts at the **children** of the selected directory (per `src/scratch.rs::tree`):
+
+```
+ chira  chira  4 items
+┌─ List ──────────────────────────┐┌─ Directory contents ──────────────────┐
+│› 06/22 00:59  try-agent/        ││ ├── README.md                         │
+│  06/21 22:10  sandbox/          ││ ├── run.sh                            │
+│  06/21 18:42  memo.md           ││ └── notes/                            │
+│  06/20 14:10  TODO.md           ││     ├── 2026-06-21.md                 │
+│                                 ││     └── 2026-06-22.md                 │
+│                                 ││                                       │
+│                                 ││                                       │
+└─────────────────────────────────┘└───────────────────────────────────────┘
+ j/k:move  l:open  h:parent  s:shell  n:new  /:filter  ?:help  q:quit
+```
+
 ## Install
 
 ```sh

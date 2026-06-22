@@ -332,7 +332,7 @@ fn cmd_new(lang: Lang, config: &Config, args: Vec<String>) -> i32 {
             }
         }
     }
-    // TUI placeholder (src/app.rs:282) と SSoT を揃えて自動採番する
+    // 既定値は app.rs:282 の TUI placeholder と手動同期 (config 化は #19)
     let name = name.unwrap_or_else(|| Local::now().format("scratch-%Y%m%d-%H%M%S.md").to_string());
     let Some(root) = resolve_root(lang, config) else {
         return 1;
@@ -368,7 +368,7 @@ fn cmd_mkdir(lang: Lang, config: &Config, args: Vec<String>) -> i32 {
             }
         }
     }
-    // name 省略は TUI の InputKind::NewDir placeholder と同じテンプレで自動採番する
+    // 既定値は app.rs:283 の TUI placeholder と手動同期 (config 化は #19)
     let name = name.unwrap_or_else(|| Local::now().format("scratch-%Y%m%d-%H%M%S").to_string());
     let Some(root) = resolve_root(lang, config) else {
         return 1;
@@ -859,7 +859,7 @@ mod tests {
         std::fs::remove_dir_all(&root).unwrap();
     }
 
-    /// name 省略時は scratch-YYYYMMDD-HHMMSS.md を自動採番する契約 (TUI placeholder と SSoT)
+    /// name 省略時は scratch-YYYYMMDD-HHMMSS.md を自動採番する契約 (TUI placeholder と手動同期)
     #[test]
     fn cmd_new_without_name_uses_timestamp_template() {
         let root = temp_root();

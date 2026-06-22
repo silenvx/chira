@@ -167,9 +167,7 @@ fn take_valid_template(
 ) -> Option<String> {
     use std::fmt::Write;
     let raw = get_str(table, key)?;
-    // whitespace-only / 前後 padding はそのまま実行時 format に渡すと CLI と TUI 双方で
-    // 評価結果は同じだが意図せず先頭空白を含む name になりうる。採用時点で trim して正規化する
-    // (空文字は未設定扱い)
+    // 前後 padding を残すと CLI/TUI で意図せず空白を含む name になるため、採用時に trim 正規化 (空文字は未設定扱い)
     let normalized = raw.trim();
     if normalized.is_empty() {
         return None;

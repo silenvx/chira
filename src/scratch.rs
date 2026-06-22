@@ -151,6 +151,16 @@ fn build_tree(
         out.push_str(&format!("{prefix}{connector}{}{suffix}\n", entry.name));
         *lines += 1;
         if entry.is_dir && depth_left > 1 {
+            // symlink-to-dir には recurse しない (in-root symlink が外部 dir を指す場合、
+            // tree が CHIRA_DIR 外の内容を露出させる経路を塞ぐ。symlink 自身は前行で表示済み)
+            let is_symlink = entry
+                .path
+                .symlink_metadata()
+                .map(|m| m.file_type().is_symlink())
+                .unwrap_or(false);
+            if is_symlink {
+                continue;
+            }
             let child_prefix = format!("{prefix}{}", if is_last { "    " } else { "│   " });
             build_tree(
                 lang,
@@ -231,6 +241,58 @@ pub fn remove(entry: &Entry) -> io::Result<()> {
 
 pub fn read_text(path: &Path) -> io::Result<String> {
     fs::read_to_string(path)
+}
+
+/// path を canonicalize して root 配下にあることを保証する。
+/// 全 CLI subcommand の path 引数を root に拘束するガード (`..` や symlink 経由の escape を止める)。
+/// path 自身を canonicalize するため target が存在しない / broken symlink だと IO エラーになる。
+/// rm/mv のように symlink 自身を操作対象にしたい経路は `ensure_path_under_root` を使う。
+pub fn ensure_under_root(root: &Path, path: &Path) -> io::Result<PathBuf> {
+    let canonical_root = root.canonicalize()?;
+    let canonical_target = path.canonicalize()?;
+    if !canonical_target.starts_with(&canonical_root) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "path escapes scratch root",
+        ));
+    }
+    Ok(canonical_target)
+}
+
+/// path 自身は canonicalize せず、parent dir だけ canonicalize して root 配下を確認する。
+/// `ensure_under_root` と異なり broken symlink (target 不在) も pass する (entry 自体の `symlink_metadata` で存在検査)。
+/// rm/mv で symlink を unix 慣習どおり「symlink 自体」を対象にするための lexical path 用ガード。
+pub fn ensure_path_under_root(root: &Path, path: &Path) -> io::Result<()> {
+    let canonical_root = root.canonicalize()?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| io::Error::other("path has no parent"))?;
+    let canonical_parent = parent.canonicalize()?;
+    if !canonical_parent.starts_with(&canonical_root) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "path escapes scratch root",
+        ));
+    }
+    path.symlink_metadata()?;
+    Ok(())
+}
+
+/// 既存パスから Entry を組み立てる (CLI から rename / remove を呼ぶための adapter)。
+/// is_dir は symlink を辿らず lstat で判定し、broken symlink を file 扱いで listing と整合させる。
+pub fn entry_from_path(path: &Path) -> io::Result<Entry> {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let meta = path.symlink_metadata()?;
+    let modified = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+    Ok(Entry {
+        path: path.to_path_buf(),
+        name,
+        is_dir: meta.is_dir(),
+        modified,
+    })
 }
 
 #[cfg(test)]
@@ -434,6 +496,32 @@ mod tests {
     }
 
     #[test]
+    fn tree_does_not_recurse_into_symlinked_directory() {
+        let root = temp_root();
+        // 外部 dir に "secret" を置き、root から symlink で参照させる。
+        // tree が symlink を辿ると secret が出力に混入してしまう (security risk)
+        let outside = env::temp_dir().join(format!("chira-tree-outside-{}", std::process::id()));
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("secret.txt"), b"do-not-leak").unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("escape")).unwrap();
+        create_file(&root, "ok.md").unwrap();
+
+        let t = tree(crate::i18n::Lang::En, &root, 4, 100);
+        // symlink 自身 (`escape/`) は表示してよいが中身 (`secret.txt`) は出力に出てはならない
+        assert!(
+            t.contains("escape"),
+            "tree should still show the symlink entry:\n{t}"
+        );
+        assert!(t.contains("ok.md"), "regular entry should appear:\n{t}");
+        assert!(
+            !t.contains("secret.txt"),
+            "tree must not recurse into in-root symlinks:\n{t}"
+        );
+        fs::remove_dir_all(&root).unwrap();
+        fs::remove_dir_all(&outside).unwrap();
+    }
+
+    #[test]
     fn tree_respects_line_cap() {
         let root = temp_root();
         for i in 0..10 {
@@ -461,5 +549,75 @@ mod tests {
         assert!(old.exists());
 
         fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn ensure_under_root_accepts_nested_path() {
+        let root = temp_root();
+        let nested = create_dir(&root, "ws").unwrap();
+        create_file(&nested, "inner.md").unwrap();
+        // root 配下のネストパスは通る
+        assert!(ensure_under_root(&root, &nested).is_ok());
+        assert!(ensure_under_root(&root, &nested.join("inner.md")).is_ok());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn ensure_under_root_rejects_symlink_escape() {
+        let root = temp_root();
+        // 外部ディレクトリを root 配下の symlink で参照しても canonicalize で見抜く
+        let outside = env::temp_dir().join(format!("chira-outside-{}", std::process::id()));
+        fs::create_dir_all(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("escape")).unwrap();
+        assert!(ensure_under_root(&root, &root.join("escape")).is_err());
+        fs::remove_dir_all(&root).unwrap();
+        fs::remove_dir_all(&outside).unwrap();
+    }
+
+    #[test]
+    fn entry_from_path_reports_dir_and_file() {
+        let root = temp_root();
+        let dir = create_dir(&root, "ws").unwrap();
+        let file = create_file(&root, "note.md").unwrap();
+
+        let e_dir = entry_from_path(&dir).unwrap();
+        assert!(e_dir.is_dir);
+        assert_eq!(e_dir.name, "ws");
+
+        let e_file = entry_from_path(&file).unwrap();
+        assert!(!e_file.is_dir);
+        assert_eq!(e_file.name, "note.md");
+
+        // 不在パスはエラー
+        assert!(entry_from_path(&root.join("missing")).is_err());
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn ensure_path_under_root_accepts_broken_symlink() {
+        let root = temp_root();
+        // broken symlink は ensure_under_root では canonicalize に失敗するが、
+        // ensure_path_under_root では parent 検証 + symlink_metadata で受理する
+        std::os::unix::fs::symlink("/nonexistent/target", root.join("broken")).unwrap();
+        assert!(ensure_under_root(&root, &root.join("broken")).is_err());
+        assert!(ensure_path_under_root(&root, &root.join("broken")).is_ok());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn ensure_path_under_root_rejects_escape() {
+        let root = temp_root();
+        create_file(&root, "note.md").unwrap();
+        assert!(ensure_path_under_root(&root, &root.join("note.md")).is_ok());
+        let outside = env::temp_dir().join(format!("chira-outside-eppur-{}", std::process::id()));
+        fs::create_dir_all(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("escape")).unwrap();
+        // entry 自体が root にある in-root symlink は target が外部でも OK (link target の安全は rm/edit 側責任)
+        assert!(ensure_path_under_root(&root, &root.join("escape")).is_ok());
+        // root 外の path 自体は parent canonicalize で reject
+        assert!(ensure_path_under_root(&root, &outside.join("foo")).is_err());
+        fs::remove_dir_all(&root).unwrap();
+        fs::remove_dir_all(&outside).unwrap();
     }
 }

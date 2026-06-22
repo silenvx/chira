@@ -1,5 +1,7 @@
 mod app;
+mod cli;
 mod config;
+mod external;
 mod i18n;
 mod scratch;
 mod ui;
@@ -8,8 +10,7 @@ use std::env;
 use std::fs;
 use std::io;
 use std::os::unix::ffi::OsStrExt;
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use ratatui::DefaultTerminal;
@@ -24,7 +25,25 @@ use config::Config;
 
 fn main() -> io::Result<()> {
     let lang = i18n::lang();
-    let cd_file = match parse_args(lang) {
+    let argv: Vec<String> = env::args().skip(1).collect();
+
+    // README wrapper が `--cd-file <tmp>` を前置するため、argv 中の最初の非フラグが subcommand なら CLI ディスパッチ。
+    // CLI モードでは --cd-file は無視する (wrapper の cd は empty file で no-op になる)。
+    if let Some(sub_idx) = first_non_flag_index(&argv) {
+        let first = &argv[sub_idx];
+        if cli::is_subcommand(first) {
+            let sub = first.clone();
+            let sub_args = argv[sub_idx + 1..].to_vec();
+            let config = config::load(lang);
+            let code = cli::run(lang, &config, &sub, sub_args);
+            std::process::exit(code);
+        } else {
+            eprint!("{}", i18n::err_unknown_arg(lang, first));
+            std::process::exit(2);
+        }
+    }
+
+    let cd_file = match parse_args(&argv, lang) {
         Ok(v) => v,
         Err(msg) => {
             eprint!("{msg}");
@@ -46,18 +65,41 @@ fn main() -> io::Result<()> {
     Ok(())
 }
 
+/// argv 中の最初の「-」始まりでないトークンの index を返す。
+/// シェル wrapper が `--cd-file <tmp>` を前置するため、サブコマンドは必ずしも先頭ではない。
+/// `--cd-file` 以外のフラグが先に出てきた場合は CLI ディスパッチを諦め None を返す
+/// (TUI 経路の parse_args に委ねて未知フラグを `exit 2` で reject させるため。
+/// `--help` / `--bogus` 等のフラグを silent に skip すると subcommand が誤起動する)。
+fn first_non_flag_index(argv: &[String]) -> Option<usize> {
+    let mut i = 0;
+    while i < argv.len() {
+        let arg = &argv[i];
+        if !arg.starts_with('-') {
+            return Some(i);
+        }
+        if arg == "--cd-file" {
+            i += 2;
+        } else if arg.starts_with("--cd-file=") {
+            i += 1;
+        } else {
+            return None;
+        }
+    }
+    None
+}
+
 /// `--cd-file <path>` を取り出す。`--help` は usage を表示して終了する。
-fn parse_args(lang: i18n::Lang) -> Result<Option<PathBuf>, String> {
+fn parse_args(argv: &[String], lang: i18n::Lang) -> Result<Option<PathBuf>, String> {
     let mut cd_file = None;
-    let mut args = env::args().skip(1);
-    while let Some(arg) = args.next() {
+    let mut iter = argv.iter();
+    while let Some(arg) = iter.next() {
         match arg.as_str() {
             "-h" | "--help" => {
                 print!("{}", i18n::usage(lang));
                 std::process::exit(0);
             }
             "--cd-file" => {
-                let path = args
+                let path = iter
                     .next()
                     .ok_or_else(|| i18n::err_cd_file_needs_arg(lang).to_string())?;
                 cd_file = Some(PathBuf::from(path));
@@ -106,8 +148,12 @@ fn run_external(
     execute!(io::stdout(), LeaveAlternateScreen)?;
 
     let result = match pending {
-        Pending::Editor(path) => spawn_editor(lang, path, config.editor.as_deref()),
-        Pending::Shell(dir) => spawn_shell(lang, dir, config.shell.as_deref()),
+        Pending::Editor(path) => {
+            external::spawn_editor(lang, path, config.editor.as_deref()).map(|_| ())
+        }
+        Pending::Shell(dir) => {
+            external::spawn_shell(lang, dir, config.shell.as_deref()).map(|_| ())
+        }
     };
 
     enable_raw_mode()?;
@@ -116,80 +162,52 @@ fn run_external(
     result
 }
 
-/// $EDITOR / $SHELL / config 値を shell の語分割規則 (shell-words) で argv に分解する。
-/// 引数付き (`code --wait` / `zsh -l`) と quote 済みスペース入りパス (`'/My Apps/subl' -w`) の両方を扱う (whitespace split は後者を壊す)。
-fn command_argv(lang: i18n::Lang, command: &str) -> io::Result<Vec<String>> {
-    let argv = shell_words::split(command).map_err(|e| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            i18n::err_command_parse(lang, &e),
-        )
-    })?;
-    if argv.is_empty() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            i18n::err_command_empty(lang),
-        ));
-    }
-    Ok(argv)
-}
-
-fn spawn_editor(lang: i18n::Lang, path: &Path, config_editor: Option<&str>) -> io::Result<()> {
-    let env_editor = env::var("EDITOR").ok();
-    let editor = resolve_external(env_editor.as_deref(), config_editor, "vi");
-    let argv = command_argv(lang, &editor)?;
-    Command::new(&argv[0]).args(&argv[1..]).arg(path).status()?;
-    Ok(())
-}
-
-fn spawn_shell(lang: i18n::Lang, dir: &Path, config_shell: Option<&str>) -> io::Result<()> {
-    let env_shell = env::var("SHELL").ok();
-    let shell = resolve_external(env_shell.as_deref(), config_shell, "/bin/sh");
-    // editor と同じく引数付き ($SHELL="zsh -l" や config shell="bash -l") を許容する
-    let argv = command_argv(lang, &shell)?;
-    Command::new(&argv[0])
-        .args(&argv[1..])
-        .current_dir(dir)
-        .status()?;
-    Ok(())
-}
-
-/// 外部プロセス名の解決: env > config > ハードコード default。空文字は未設定扱い。
-fn resolve_external(env_val: Option<&str>, config_val: Option<&str>, default: &str) -> String {
-    env_val
-        .filter(|s| !s.is_empty())
-        .or(config_val.filter(|s| !s.is_empty()))
-        .unwrap_or(default)
-        .to_string()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn resolve_external_precedence() {
-        // env > config > default
-        assert_eq!(resolve_external(Some("nvim"), Some("emacs"), "vi"), "nvim");
-        assert_eq!(resolve_external(None, Some("emacs"), "vi"), "emacs");
-        assert_eq!(resolve_external(None, None, "vi"), "vi");
-        // 空文字は未設定扱いで次の候補へ送る
-        assert_eq!(resolve_external(Some(""), Some("emacs"), "vi"), "emacs");
-        assert_eq!(resolve_external(Some(""), Some(""), "vi"), "vi");
+    fn args(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| (*s).into()).collect()
     }
 
     #[test]
-    fn command_argv_handles_args_and_quoted_paths() {
+    fn parse_args_extracts_cd_file() {
         let l = i18n::Lang::En;
-        assert_eq!(command_argv(l, "vi").unwrap(), ["vi"]);
-        assert_eq!(command_argv(l, "code --wait").unwrap(), ["code", "--wait"]);
-        // shell も同じ分割を通すため引数付き shell が argv に分かれる
-        assert_eq!(command_argv(l, "zsh -l").unwrap(), ["zsh", "-l"]);
-        // quote 済みのスペース入りパスは 1 引数として保たれる
+        assert_eq!(parse_args(&args(&[]), l).unwrap(), None);
         assert_eq!(
-            command_argv(l, "'/My Apps/subl' -w").unwrap(),
-            ["/My Apps/subl", "-w"]
+            parse_args(&args(&["--cd-file", "/tmp/x"]), l).unwrap(),
+            Some(PathBuf::from("/tmp/x"))
         );
-        assert!(command_argv(l, "").is_err());
+        assert_eq!(
+            parse_args(&args(&["--cd-file=/tmp/y"]), l).unwrap(),
+            Some(PathBuf::from("/tmp/y"))
+        );
+        assert!(parse_args(&args(&["--cd-file"]), l).is_err());
+        assert!(parse_args(&args(&["--bogus"]), l).is_err());
+    }
+
+    /// README のシェル wrapper 経由でも CLI subcommand が動く (`--cd-file <tmp>` を飛ばして検出)
+    #[test]
+    fn first_non_flag_index_skips_cd_file_pair() {
+        // 引数なし → None (TUI モード)
+        assert_eq!(first_non_flag_index(&args(&[])), None);
+        // 先頭サブコマンド (素の `chira ls`)
+        assert_eq!(first_non_flag_index(&args(&["ls"])), Some(0));
+        // wrapper 経由 (`chira --cd-file /tmp/x ls`) は index 2 を返す
+        assert_eq!(
+            first_non_flag_index(&args(&["--cd-file", "/tmp/x", "ls"])),
+            Some(2)
+        );
+        // 既存の `--cd-file=/tmp/y` 形 (value 同 token) も次の token がサブコマンド
+        assert_eq!(
+            first_non_flag_index(&args(&["--cd-file=/tmp/y", "ls"])),
+            Some(1)
+        );
+        // フラグのみ (`chira --cd-file /tmp/x`) → None (TUI モード継続)
+        assert_eq!(first_non_flag_index(&args(&["--cd-file", "/tmp/x"])), None);
+        // --cd-file 以外のフラグが先にあると CLI ディスパッチを諦め None を返す
+        // (parse_args に委ねて未知フラグを exit 2 で reject させる。silent skip は subcommand 誤起動の原因)
+        assert_eq!(first_non_flag_index(&args(&["--unknown", "ls"])), None);
+        assert_eq!(first_non_flag_index(&args(&["--help", "ls"])), None);
     }
 }

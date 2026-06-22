@@ -57,24 +57,54 @@ pub fn usage(lang: Lang) -> &'static str {
     match lang {
         Lang::Ja => {
             "\
-chira — 一時的な scratch ディレクトリを管理する TUI
+chira — 一時的な scratch ディレクトリを管理する TUI/CLI
 
-usage: chira [--cd-file <path>]
+usage: chira                          TUI を起動する
+       chira [--cd-file <path>]       TUI 起動 (終了時に最終 dir を書き出す)
+       chira <subcommand> [args]      CLI として 1 ショット実行
 
+TUI オプション:
   --cd-file <path>   終了時に最終ディレクトリを <path> へ書き出す
                      (シェル関数で cd するための連携用。README 参照)
   -h, --help         このヘルプを表示
+
+サブコマンド:
+  ls [<path>]              エントリ一覧 (-l で <mtime>\\t<size>\\t<name>)
+  tree [<path>]            ディレクトリ構造を tree 風に表示 (深さ 4 / 100 行)
+  new <name> [--no-edit]   新規ファイル作成 + $EDITOR を開く
+  mkdir <name>             新規ディレクトリ作成
+  edit <name>              $EDITOR でファイルを開く
+  shell [<dir>]            指定ディレクトリ (省略時は root) で $SHELL を開く
+  rm <name> [-r] [-f]      削除 (dir は -r、-f で確認スキップ)
+  mv <old> <new>           リネーム
+  path [<name>]            エントリのフルパスを出力 (cd 連携用)
+  find <query> [<path>]    名前で絞り込み一覧 (substring match)
 "
         }
         Lang::En => {
             "\
-chira — Manage throwaway scratch directories from a TUI.
+chira — Manage throwaway scratch directories from a TUI/CLI.
 
-usage: chira [--cd-file <path>]
+usage: chira                          Launch the TUI
+       chira [--cd-file <path>]       Launch the TUI (write final dir on exit)
+       chira <subcommand> [args]      One-shot CLI invocation
 
+TUI options:
   --cd-file <path>   On exit, write the final directory to <path>
                      (for shell-function cd integration; see README)
   -h, --help         Show this help
+
+Subcommands:
+  ls [<path>]              List entries (-l for <mtime>\\t<size>\\t<name>)
+  tree [<path>]            Print a tree view (depth 4 / 100 lines)
+  new <name> [--no-edit]   Create a file and open $EDITOR
+  mkdir <name>             Create a directory
+  edit <name>              Open a file in $EDITOR
+  shell [<dir>]            Open $SHELL in the given directory (default: root)
+  rm <name> [-r] [-f]      Delete (-r for dirs, -f to skip confirm)
+  mv <old> <new>           Rename
+  path [<name>]            Print the full path of an entry (for cd integration)
+  find <query> [<path>]    List entries whose name matches the substring
 "
         }
     }
@@ -400,6 +430,69 @@ pub fn footer_help_close(lang: Lang) -> &'static str {
     match lang {
         Lang::Ja => "何かキーを押すと閉じる",
         Lang::En => "Press any key to close",
+    }
+}
+
+pub fn err_unknown_subcommand(lang: Lang, sub: &str) -> String {
+    match lang {
+        Lang::Ja => format!("不明なサブコマンド: {sub}\n{}", usage(lang)),
+        Lang::En => format!("Unknown subcommand: {sub}\n{}", usage(lang)),
+    }
+}
+
+pub fn err_cli_unknown_flag(lang: Lang, sub: &str, flag: &str) -> String {
+    match lang {
+        Lang::Ja => format!("{sub}: 不明なオプション: {flag}"),
+        Lang::En => format!("{sub}: unknown option: {flag}"),
+    }
+}
+
+pub fn err_cli_too_many_args(lang: Lang, sub: &str) -> String {
+    match lang {
+        Lang::Ja => format!("{sub}: 引数が多すぎます"),
+        Lang::En => format!("{sub}: too many arguments"),
+    }
+}
+
+pub fn err_cli_arg_required(lang: Lang, sub: &str, what: &str) -> String {
+    match lang {
+        Lang::Ja => format!("{sub}: 引数が必要です: {what}"),
+        Lang::En => format!("{sub}: argument required: {what}"),
+    }
+}
+
+pub fn err_cli_op(lang: Lang, sub: &str, e: &dyn std::fmt::Display) -> String {
+    match lang {
+        Lang::Ja => format!("{sub}: {e}"),
+        Lang::En => format!("{sub}: {e}"),
+    }
+}
+
+pub fn err_cli_root(lang: Lang, e: &dyn std::fmt::Display) -> String {
+    match lang {
+        Lang::Ja => format!("scratch root の解決に失敗: {e}"),
+        Lang::En => format!("Failed to resolve scratch root: {e}"),
+    }
+}
+
+pub fn err_cli_not_a_directory(lang: Lang, path: &dyn std::fmt::Display) -> String {
+    match lang {
+        Lang::Ja => format!("shell: ディレクトリではありません: {path}"),
+        Lang::En => format!("shell: not a directory: {path}"),
+    }
+}
+
+pub fn err_cli_rm_dir_needs_r(lang: Lang, name: &str) -> String {
+    match lang {
+        Lang::Ja => format!("rm: ディレクトリの削除には -r が必要です: {name}"),
+        Lang::En => format!("rm: cannot remove directory '{name}' without -r"),
+    }
+}
+
+pub fn status_cli_rm_cancelled(lang: Lang) -> &'static str {
+    match lang {
+        Lang::Ja => "rm: キャンセルしました",
+        Lang::En => "rm: cancelled",
     }
 }
 

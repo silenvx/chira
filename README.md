@@ -144,6 +144,7 @@ Running `chira` with no arguments launches the TUI. Pass a subcommand to run a o
 | `chira mv <old> <new>` | `r` | Rename |
 | `chira path [<name>]` | — | Print the full path of an entry (or `CHIRA_DIR` if omitted) |
 | `chira find <query> [<path>]` | `/` | List entries whose name matches the substring (`ls`-style output) |
+| `chira gc [--ttl <dur>] [--archive-dir <path>] [--dry-run]` | — | Move entries whose `mtime` exceeds TTL to the archive dir (see below) |
 
 Output is biased toward machine-readability: `ls` / `find` print one name per line, color and the trailing `/` for directories appear only when stdout is a TTY. Errors go to stderr; missing entries exit `1`, argument errors exit `2`. Destructive operations (`rm` / `mv`) verify that the target is under `CHIRA_DIR` (canonicalized; `..` and symlink escapes are rejected). On a symlink, `rm` removes the symlink itself (unix `rm` semantics), not the target. In non-interactive (non-TTY stdin) contexts, `rm` requires `-f`; without it the prompt auto-cancels with exit `1`. `rm` / `mv` refuse to operate on the scratch root itself (`.` / empty name) to prevent accidentally destroying the whole `CHIRA_DIR`.
 
@@ -155,6 +156,51 @@ Output is biased toward machine-readability: `ls` / `find` print one name per li
 cd "$(chira path)"               # cd into CHIRA_DIR
 cd "$(chira path my-experiment)" # cd into a specific entry
 ```
+
+## Archive (chira gc)
+
+chira treats entries as throwaways, but stale ones pile up unless you delete them by hand. `chira gc` sweeps entries whose `mtime` is older than a TTL and moves them under `<CHIRA_DIR>/.archive/` (a hidden directory, so it disappears from the main listing). The archived files stay as plain files/directories, so `find` / `grep` still work on them.
+
+```sh
+chira gc --ttl 30d              # archive entries older than 30 days
+chira gc --ttl 12h --dry-run    # preview without moving
+chira gc --archive-dir ~/old    # move to a custom location
+```
+
+Time units: `s` / `m` / `h` / `d` / `w` (no unit defaults to seconds). The TTL is required — `chira gc` exits with an error if neither `--ttl` nor `[archive] ttl_days` is set, so an unconfigured invocation never erases anything by surprise.
+
+The mtime is read from the entry itself (`symlink_metadata`, so symlinks are aged by the link itself, not the target). atime is not used because relatime / noatime mounts do not update it.
+
+### Exclusions
+
+Even past the TTL, the following are kept (counted as `kept` in the summary):
+
+- The `.archive/` directory itself (so re-sweeps stay safe)
+- Directories that contain a `.keep` marker file (lf / nnn convention)
+- Names that match any pattern in `[archive] keep` (see below)
+
+Entries whose mtime cannot be read (broken symlinks etc.) are tracked separately as **errors** — they are skipped with a warning on stderr and counted in `errors`, not `kept`. The summary line shows `archived / kept / errors` as independent categories, and a non-zero `errors` count exits with code 1 so cron can detect the condition.
+
+### Config (`[archive]`)
+
+```toml
+[archive]
+# TTL in days (0 / unset means archive is off; CLI --ttl can still drive a one-shot run)
+ttl_days = 30
+
+# Archive destination. ~ is expanded. Defaults to <CHIRA_DIR>/.archive
+dir = "~/scratch-archive"
+
+# Sweep on TUI startup. Default false (a surprise sweep on every run is too aggressive)
+on_startup = false
+
+# Names matching any of these globs are kept. A trailing `/` restricts the match to directories
+keep = ["pinned-*", "longterm/"]
+```
+
+Globs support `*` (any run) and `?` (any single character). A trailing `/` makes the pattern match directories only.
+
+Name collisions in the archive directory get a `.<unix_ts>` suffix appended (e.g. `old.md.1742278300`); a second collision at the same second appends `_1`, `_2`, etc. Cross-filesystem moves fail with the underlying `EXDEV` error reported to stderr — point `dir` at a location on the same filesystem as `CHIRA_DIR` if you need that case to succeed.
 
 ## Development
 

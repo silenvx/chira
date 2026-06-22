@@ -12,6 +12,16 @@ pub struct Config {
     pub dir: Option<String>,
     pub editor: Option<String>,
     pub shell: Option<String>,
+    pub archive: ArchiveConfig,
+}
+
+/// `[archive]` セクション。`ttl_days = 0` または未指定で archive 機能 off。
+#[derive(Default, Debug, PartialEq, Eq)]
+pub struct ArchiveConfig {
+    pub ttl_days: Option<u64>,
+    pub dir: Option<String>,
+    pub on_startup: bool,
+    pub keep: Vec<String>,
 }
 
 /// 設定ファイルを読み込む。不在・空は未設定扱い (warning なし)。
@@ -76,7 +86,36 @@ fn parse(text: &str) -> Result<Config, toml::de::Error> {
         dir: get_str(&table, "dir"),
         editor: get_str(&table, "editor"),
         shell: get_str(&table, "shell"),
+        archive: parse_archive(table.get("archive").and_then(|v| v.as_table())),
     })
+}
+
+fn parse_archive(table: Option<&toml::Table>) -> ArchiveConfig {
+    let Some(t) = table else {
+        return ArchiveConfig::default();
+    };
+    ArchiveConfig {
+        ttl_days: t
+            .get("ttl_days")
+            .and_then(|v| v.as_integer())
+            .and_then(|n| u64::try_from(n).ok()),
+        dir: get_str(t, "dir"),
+        on_startup: t
+            .get("on_startup")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+        keep: t
+            .get("keep")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default(),
+    }
 }
 
 /// 文字列値のみ採用する。型不一致・空文字は未設定扱い。
@@ -199,6 +238,7 @@ mod tests {
                 dir: Some("~/scratch".into()),
                 editor: Some("nvim --clean".into()),
                 shell: Some("/bin/zsh".into()),
+                ..Default::default()
             }
         );
     }
@@ -223,8 +263,62 @@ mod tests {
                 dir: None,
                 editor: Some("vi".into()),
                 shell: None,
+                ..Default::default()
             }
         );
+    }
+
+    #[test]
+    fn parse_extracts_archive_section() {
+        let config = parse(
+            r#"
+            [archive]
+            ttl_days = 30
+            dir = "~/scratch-archive"
+            on_startup = true
+            keep = ["pinned-*", "longterm/"]
+            "#,
+        )
+        .unwrap();
+        assert_eq!(config.archive.ttl_days, Some(30));
+        assert_eq!(config.archive.dir.as_deref(), Some("~/scratch-archive"));
+        assert!(config.archive.on_startup);
+        assert_eq!(
+            config.archive.keep,
+            vec!["pinned-*".to_string(), "longterm/".to_string()]
+        );
+    }
+
+    #[test]
+    fn parse_archive_missing_is_default_off() {
+        let config = parse("dir = \"/scratch\"").unwrap();
+        assert_eq!(config.archive, ArchiveConfig::default());
+        assert!(!config.archive.on_startup);
+        assert_eq!(config.archive.ttl_days, None);
+        assert!(config.archive.keep.is_empty());
+    }
+
+    #[test]
+    fn parse_archive_ignores_non_string_keep_entries() {
+        // 型不一致・空文字は keep から弾く (一覧全体ではなく要素単位で除外)
+        let config = parse(
+            r#"
+            [archive]
+            keep = ["ok-*", 42, "", "longterm/"]
+            "#,
+        )
+        .unwrap();
+        assert_eq!(
+            config.archive.keep,
+            vec!["ok-*".to_string(), "longterm/".to_string()]
+        );
+    }
+
+    #[test]
+    fn parse_archive_rejects_negative_ttl() {
+        // u64 へ収まらない値 (負値) は未設定扱い (誤って off 化を防ぐため None で返す)
+        let config = parse("[archive]\nttl_days = -1").unwrap();
+        assert_eq!(config.archive.ttl_days, None);
     }
 
     #[test]

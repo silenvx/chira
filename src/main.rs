@@ -67,6 +67,9 @@ fn main() -> io::Result<()> {
 
 /// argv 中の最初の「-」始まりでないトークンの index を返す。
 /// シェル wrapper が `--cd-file <tmp>` を前置するため、サブコマンドは必ずしも先頭ではない。
+/// `--cd-file` 以外のフラグが先に出てきた場合は CLI ディスパッチを諦め None を返す
+/// (TUI 経路の parse_args に委ねて未知フラグを `exit 2` で reject させるため。
+/// `--help` / `--bogus` 等のフラグを silent に skip すると subcommand が誤起動する)。
 fn first_non_flag_index(argv: &[String]) -> Option<usize> {
     let mut i = 0;
     while i < argv.len() {
@@ -74,11 +77,12 @@ fn first_non_flag_index(argv: &[String]) -> Option<usize> {
         if !arg.starts_with('-') {
             return Some(i);
         }
-        // `--cd-file <value>` のように引数を取る flag は value 部をスキップする
         if arg == "--cd-file" {
             i += 2;
-        } else {
+        } else if arg.starts_with("--cd-file=") {
             i += 1;
+        } else {
+            return None;
         }
     }
     None
@@ -201,7 +205,9 @@ mod tests {
         );
         // フラグのみ (`chira --cd-file /tmp/x`) → None (TUI モード継続)
         assert_eq!(first_non_flag_index(&args(&["--cd-file", "/tmp/x"])), None);
-        // 不明 flag は skip しない (parse_args 側で reject される)
-        assert_eq!(first_non_flag_index(&args(&["--unknown", "foo"])), Some(1));
+        // --cd-file 以外のフラグが先にあると CLI ディスパッチを諦め None を返す
+        // (parse_args に委ねて未知フラグを exit 2 で reject させる。silent skip は subcommand 誤起動の原因)
+        assert_eq!(first_non_flag_index(&args(&["--unknown", "ls"])), None);
+        assert_eq!(first_non_flag_index(&args(&["--help", "ls"])), None);
     }
 }

@@ -67,6 +67,7 @@ TUI オプション:
   --cd-file <path>   終了時に最終ディレクトリを <path> へ書き出す
                      (シェル関数で cd するための連携用。README 参照)
   -h, --help         このヘルプを表示
+  -V, --version      バージョン情報を表示
 
 サブコマンド:
   ls [<path>]              エントリ一覧 (-l で <mtime>\\t<size>\\t<name>)
@@ -95,6 +96,7 @@ TUI options:
   --cd-file <path>   On exit, write the final directory to <path>
                      (for shell-function cd integration; see README)
   -h, --help         Show this help
+  -V, --version      Print version information
 
 Subcommands:
   ls [<path>]              List entries (-l for <mtime>\\t<size>\\t<name>)

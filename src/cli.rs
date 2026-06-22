@@ -332,10 +332,8 @@ fn cmd_new(lang: Lang, config: &Config, args: Vec<String>) -> i32 {
             }
         }
     }
-    let Some(name) = name else {
-        eprintln!("{}", i18n::err_cli_arg_required(lang, "new", "<name>"));
-        return 2;
-    };
+    // 既定値は app.rs:282 の TUI placeholder と手動同期 (config 化は #19)
+    let name = name.unwrap_or_else(|| Local::now().format("scratch-%Y%m%d-%H%M%S.md").to_string());
     let Some(root) = resolve_root(lang, config) else {
         return 1;
     };
@@ -370,10 +368,8 @@ fn cmd_mkdir(lang: Lang, config: &Config, args: Vec<String>) -> i32 {
             }
         }
     }
-    let Some(name) = name else {
-        eprintln!("{}", i18n::err_cli_arg_required(lang, "mkdir", "<name>"));
-        return 2;
-    };
+    // 既定値は app.rs:283 の TUI placeholder と手動同期 (config 化は #19)
+    let name = name.unwrap_or_else(|| Local::now().format("scratch-%Y%m%d-%H%M%S").to_string());
     let Some(root) = resolve_root(lang, config) else {
         return 1;
     };
@@ -853,6 +849,65 @@ mod tests {
         let code = cmd_mkdir(Lang::En, &config, vec!["ws".into()]);
         assert_eq!(code, 0);
         assert!(root.join("ws").is_dir());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// name 省略時は scratch-YYYYMMDD-HHMMSS.md を自動採番する契約 (TUI placeholder と手動同期)
+    #[test]
+    fn cmd_new_without_name_uses_timestamp_template() {
+        let root = temp_root();
+        let config = Config {
+            dir: Some(root.to_string_lossy().into_owned()),
+            ..Default::default()
+        };
+        let code = cmd_new(Lang::En, &config, vec!["--no-edit".into()]);
+        assert_eq!(code, 0);
+        let created: Vec<_> = std::fs::read_dir(&root)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            created.len(),
+            1,
+            "expected exactly one file, got {created:?}"
+        );
+        let name = &created[0];
+        assert!(
+            name.starts_with("scratch-")
+                && name.ends_with(".md")
+                && name.len() == "scratch-YYYYMMDD-HHMMSS.md".len(),
+            "unexpected default name: {name}"
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// mkdir も同様に name 省略時は scratch-YYYYMMDD-HHMMSS を自動採番する
+    #[test]
+    fn cmd_mkdir_without_name_uses_timestamp_template() {
+        let root = temp_root();
+        let config = Config {
+            dir: Some(root.to_string_lossy().into_owned()),
+            ..Default::default()
+        };
+        let code = cmd_mkdir(Lang::En, &config, vec![]);
+        assert_eq!(code, 0);
+        let created: Vec<_> = std::fs::read_dir(&root)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            created.len(),
+            1,
+            "expected exactly one dir, got {created:?}"
+        );
+        let name = &created[0];
+        assert!(
+            name.starts_with("scratch-") && name.len() == "scratch-YYYYMMDD-HHMMSS".len(),
+            "unexpected default name: {name}"
+        );
         std::fs::remove_dir_all(&root).unwrap();
     }
 

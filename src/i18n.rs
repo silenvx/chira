@@ -327,10 +327,12 @@ pub fn status_no_actions(lang: Lang) -> &'static str {
     }
 }
 
+/// 文言は過去形。status は外部プロセス復帰後に初めて描画される (実行中は TUI を抜けている) ため、
+/// "実行しました" の方が表示時点の状態に一致する。
 pub fn status_run_action(lang: Lang, name: &str) -> String {
     match lang {
-        Lang::Ja => format!("アクション実行: {name}"),
-        Lang::En => format!("Running action: {name}"),
+        Lang::Ja => format!("アクション実行しました: {name}"),
+        Lang::En => format!("Ran action: {name}"),
     }
 }
 

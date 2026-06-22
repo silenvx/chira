@@ -345,9 +345,13 @@ impl App {
                 self.refresh();
                 self.select_by_name(&name);
                 self.status = i18n::status_run_action(self.lang, &action.name);
+                // CHIRA_TARGET / CHIRA_ROOT は絶対パス契約。CHIRA_DIR / config dir が相対だと
+                // root も dir も相対になりうるため、symlink を辿らない lexical 絶対化で揃える
+                let dir = std::path::absolute(&path).unwrap_or(path);
+                let root = std::path::absolute(&self.root).unwrap_or_else(|_| self.root.clone());
                 self.pending = Some(Pending::Run {
-                    dir: path,
-                    root: self.root.clone(),
+                    dir,
+                    root,
                     command: action.run,
                 });
             }
@@ -764,7 +768,8 @@ mod tests {
                 command,
             }) => {
                 assert!(dir.ends_with("ws"));
-                assert_eq!(r, root);
+                assert!(dir.is_absolute(), "CHIRA_TARGET 契約: dir は絶対パス");
+                assert!(r.is_absolute(), "CHIRA_ROOT 契約: root は絶対パス");
                 assert_eq!(command, "git init -q");
             }
             _ => panic!("confirm の y で Pending::Run を要求するはず"),

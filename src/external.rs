@@ -129,18 +129,21 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let root = dir.parent().unwrap();
 
-        // && チェイン + CHIRA_TARGET_NAME 展開 + cwd 解決を一度に検証する
+        // && チェイン + 3 つの CHIRA_* env 展開 + cwd 解決を一度に検証する
         let status = spawn_run(
             &dir,
             root,
-            "printf '%s' \"$CHIRA_TARGET_NAME\" > out.txt && printf ok >> out.txt",
+            "printf '%s\\n%s\\n%s\\n' \"$CHIRA_TARGET_NAME\" \"$CHIRA_TARGET\" \"$CHIRA_ROOT\" > out.txt",
         )
         .unwrap();
         assert!(status.success());
 
         let content = std::fs::read_to_string(dir.join("out.txt")).unwrap();
         let name = dir.file_name().unwrap().to_string_lossy();
-        assert_eq!(content, format!("{name}ok"));
+        let mut lines = content.lines();
+        assert_eq!(lines.next().unwrap(), name);
+        assert_eq!(lines.next().unwrap(), dir.to_str().unwrap());
+        assert_eq!(lines.next().unwrap(), root.to_str().unwrap());
 
         std::fs::remove_dir_all(&dir).unwrap();
     }

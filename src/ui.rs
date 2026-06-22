@@ -199,19 +199,40 @@ fn render_confirm_action(frame: &mut Frame, app: &App, area: Rect) {
         .map(|a| a.run.clone())
         .unwrap_or_default();
     let name = app.pending_name();
-    let popup = centered(area, 64, 6);
+
+    // 信頼ゲートはコマンド全文を見せるのが要件。固定高だと長い / 複数行 run でコマンドや
+    // 操作行 (y/n) がクリップされるため、コマンドの折返し行数からポップアップ高さを算出する。
+    let width = 72.min(area.width.saturating_sub(2)).max(20);
+    let inner_w = (width as usize).saturating_sub(2).max(1);
+    let mut cmd_lines: Vec<String> = Vec::new();
+    for logical in command.split('\n') {
+        let chars: Vec<char> = logical.chars().collect();
+        if chars.is_empty() {
+            cmd_lines.push(String::new());
+        } else {
+            for chunk in chars.chunks(inner_w) {
+                cmd_lines.push(chunk.iter().collect());
+            }
+        }
+    }
+    // 内側 = prompt 1 + command N + 空行 1 + 操作行 1、border 上下 2 を足し area に cap する
+    let height = (cmd_lines.len() as u16 + 5).min(area.height);
+
+    let popup = centered(area, width, height);
     frame.render_widget(Clear, popup);
-    let text = vec![
-        Line::raw(i18n::confirm_action_prompt(app.lang, name)),
-        Line::from(Span::styled(command, Style::new().fg(Color::Yellow))),
-        Line::raw(""),
-        Line::from(vec![
-            Span::styled("y", Style::new().fg(Color::Red).bold()),
-            Span::raw(i18n::confirm_action_run_label(app.lang)),
-            Span::styled("n/Esc", Style::new().fg(Color::Green).bold()),
-            Span::raw(i18n::confirm_cancel_label(app.lang)),
-        ]),
-    ];
+
+    let mut text = vec![Line::raw(i18n::confirm_action_prompt(app.lang, name))];
+    for l in cmd_lines {
+        text.push(Line::from(Span::styled(l, Style::new().fg(Color::Yellow))));
+    }
+    text.push(Line::raw(""));
+    text.push(Line::from(vec![
+        Span::styled("y", Style::new().fg(Color::Red).bold()),
+        Span::raw(i18n::confirm_action_run_label(app.lang)),
+        Span::styled("n/Esc", Style::new().fg(Color::Green).bold()),
+        Span::raw(i18n::confirm_cancel_label(app.lang)),
+    ]));
+
     frame.render_widget(
         Paragraph::new(text).wrap(Wrap { trim: false }).block(
             Block::bordered()

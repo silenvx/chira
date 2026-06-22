@@ -891,7 +891,7 @@ mod tests {
     }
 
     /// 未知 chrono specifier (`%Q` 等) は panic させず warn + default にフォールバック。
-    /// warning は chrono 専用 i18n を使い、name 安全条件 warning と区別する (debate-review #24 で指摘)
+    /// warning は chrono 専用 i18n を使い、name 安全条件 warning と区別する
     #[test]
     fn parse_new_invalid_chrono_specifier_warns_without_panic() {
         let (config, warnings) = parse(

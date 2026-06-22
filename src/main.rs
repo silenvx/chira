@@ -132,7 +132,7 @@ fn first_non_flag_index(argv: &[String]) -> Option<usize> {
     None
 }
 
-/// `--cd-file <path>` を取り出す。`--help` は usage を表示して終了する。
+/// `--cd-file <path>` を取り出す。`--help` / `--version` は表示して終了する。
 fn parse_args(argv: &[String], lang: i18n::Lang) -> Result<Option<PathBuf>, String> {
     let mut cd_file = None;
     let mut iter = argv.iter();
@@ -140,6 +140,10 @@ fn parse_args(argv: &[String], lang: i18n::Lang) -> Result<Option<PathBuf>, Stri
         match arg.as_str() {
             "-h" | "--help" => {
                 print!("{}", i18n::usage(lang));
+                std::process::exit(0);
+            }
+            "-V" | "--version" => {
+                println!("chira {}", env!("CARGO_PKG_VERSION"));
                 std::process::exit(0);
             }
             "--cd-file" => {

@@ -71,8 +71,8 @@ TUI オプション:
 サブコマンド:
   ls [<path>]              エントリ一覧 (-l で <mtime>\\t<size>\\t<name>)
   tree [<path>]            ディレクトリ構造を tree 風に表示 (深さ 4 / 100 行)
-  new <name> [--no-edit]   新規ファイル作成 + $EDITOR を開く
-  mkdir <name>             新規ディレクトリ作成
+  new [<name>] [--no-edit] 新規ファイル作成 + $EDITOR を開く (省略時は scratch-YYYYMMDD-HHMMSS.md)
+  mkdir [<name>]           新規ディレクトリ作成 (省略時は scratch-YYYYMMDD-HHMMSS)
   edit <name>              $EDITOR でファイルを開く
   shell [<dir>]            指定ディレクトリ (省略時は root) で $SHELL を開く
   rm <name> [-r] [-f]      削除 (dir は -r、-f で確認スキップ)
@@ -99,8 +99,8 @@ TUI options:
 Subcommands:
   ls [<path>]              List entries (-l for <mtime>\\t<size>\\t<name>)
   tree [<path>]            Print a tree view (depth 4 / 100 lines)
-  new <name> [--no-edit]   Create a file and open $EDITOR
-  mkdir <name>             Create a directory
+  new [<name>] [--no-edit] Create a file and open $EDITOR (default: scratch-YYYYMMDD-HHMMSS.md)
+  mkdir [<name>]           Create a directory (default: scratch-YYYYMMDD-HHMMSS)
   edit <name>              Open a file in $EDITOR
   shell [<dir>]            Open $SHELL in the given directory (default: root)
   rm <name> [-r] [-f]      Delete (-r for dirs, -f to skip confirm)

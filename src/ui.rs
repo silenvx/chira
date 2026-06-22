@@ -343,7 +343,14 @@ fn render_config(frame: &mut Frame, app: &App, state: &ConfigState, area: Rect) 
     let [list_area, detail_area] =
         Layout::vertical([Constraint::Min(0), Constraint::Length(7)]).areas(area);
 
-    render_config_list(frame, app, state, list_area);
+    // KeepList / KeepEdit 中はメイン pane を keep entries 一覧に差し替え、
+    // どの entry が選択中か視覚的に分かるようにする (誤削除/誤編集の防止)
+    match state.submode {
+        ConfigSubmode::KeepList { selected } | ConfigSubmode::KeepEdit { index: selected } => {
+            render_keep_list(frame, app, state, selected, list_area);
+        }
+        _ => render_config_list(frame, app, state, list_area),
+    }
     render_config_detail(frame, app, state, detail_area);
 
     match state.submode {
@@ -351,6 +358,40 @@ fn render_config(frame: &mut Frame, app: &App, state: &ConfigState, area: Rect) 
         ConfigSubmode::KeepEdit { .. } => render_config_input(frame, app, state, area),
         _ => {}
     }
+}
+
+fn render_keep_list(
+    frame: &mut Frame,
+    app: &App,
+    state: &ConfigState,
+    selected: usize,
+    area: Rect,
+) {
+    let items: Vec<ListItem> = if state.keep.is_empty() {
+        vec![ListItem::new(Line::from(Span::styled(
+            i18n::config_keep_empty(app.lang),
+            Style::new().fg(Color::DarkGray),
+        )))]
+    } else {
+        state
+            .keep
+            .iter()
+            .map(|s| ListItem::new(Line::raw(s.clone())))
+            .collect()
+    };
+    let list = List::new(items)
+        .block(
+            Block::bordered()
+                .title(i18n::config_keep_title(app.lang))
+                .border_style(Color::Cyan),
+        )
+        .highlight_style(Style::new().add_modifier(Modifier::REVERSED))
+        .highlight_symbol("› ");
+    let mut s = ListState::default();
+    if !state.keep.is_empty() {
+        s.select(Some(selected.min(state.keep.len() - 1)));
+    }
+    frame.render_stateful_widget(list, area, &mut s);
 }
 
 fn render_config_list(frame: &mut Frame, app: &App, state: &ConfigState, area: Rect) {

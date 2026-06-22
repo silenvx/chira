@@ -813,24 +813,27 @@ impl App {
     }
 }
 
-/// 編集モード入りの初期入力値として使う (state.edit が在ればそれを優先、無ければ effective)。
+/// 編集モード入りの初期入力値として使う。
+/// env override 中の文字列項目では空文字を返す: effective の env 値をそのまま入れて Enter 確定すると、
+/// env が外れた瞬間に env 値で config が永続化される silent overwrite を招く (Source::Env が見えている
+/// 間は config 値そのものを TUI から取れないため、上書きを意図する場合は明示入力を要求する設計)。
 fn current_value_string(state: &ConfigState, item: ConfigItem) -> String {
     match item {
         ConfigItem::Dir => state
             .edit
             .dir
             .clone()
-            .unwrap_or_else(|| state.effective.dir.0.clone()),
+            .unwrap_or_else(|| effective_initial(&state.effective.dir)),
         ConfigItem::Editor => state
             .edit
             .editor
             .clone()
-            .unwrap_or_else(|| state.effective.editor.0.clone()),
+            .unwrap_or_else(|| effective_initial(&state.effective.editor)),
         ConfigItem::Shell => state
             .edit
             .shell
             .clone()
-            .unwrap_or_else(|| state.effective.shell.0.clone()),
+            .unwrap_or_else(|| effective_initial(&state.effective.shell)),
         ConfigItem::ArchiveDir => state
             .edit
             .archive_dir
@@ -845,6 +848,16 @@ fn current_value_string(state: &ConfigState, item: ConfigItem) -> String {
         }
         // bool / keep は別経路 (Space toggle / KeepList)
         _ => String::new(),
+    }
+}
+
+/// effective ペア (value, source) から編集モードの初期入力値を取り出す。
+/// env override 時は空文字を返す (env 値の silent overwrite 回避)。
+fn effective_initial(effective: &(String, crate::config::Source)) -> String {
+    use crate::config::Source;
+    match &effective.1 {
+        Source::Env(_) => String::new(),
+        _ => effective.0.clone(),
     }
 }
 
@@ -1154,6 +1167,25 @@ mod tests {
         app.on_key(key('d'));
         let keep = &app.config_state.as_ref().unwrap().keep;
         assert!(keep.is_empty());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn config_edit_env_overridden_field_starts_empty() {
+        // env override 中の string 項目を編集モードで開くと初期値は空文字。
+        // effective に env 値が入っているが、確定で env 値を config に書く事故を回避する。
+        // CHIRA_DIR を set してから with_root を呼び、Dir 行を選んで Enter
+        let root = temp_root();
+        let mut app = App::with_root(root.clone(), Lang::En, Config::default());
+        // env override 状態を再現するため effective を手で書き換える
+        app.on_key(key(','));
+        app.config_state.as_mut().unwrap().effective.dir =
+            ("/env/path".into(), crate::config::Source::Env("CHIRA_DIR"));
+
+        // Dir 行は index 0 (デフォルト選択)
+        app.on_key(special(KeyCode::Enter));
+        // 初期値は env 値 ("/env/path") ではなく空文字
+        assert_eq!(app.input, "");
         std::fs::remove_dir_all(&root).unwrap();
     }
 

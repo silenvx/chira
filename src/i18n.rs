@@ -906,6 +906,20 @@ pub fn status_config_no_save_path(lang: Lang) -> &'static str {
     }
 }
 
+pub fn config_keep_title(lang: Lang) -> &'static str {
+    match lang {
+        Lang::Ja => " archive.keep ",
+        Lang::En => " archive.keep ",
+    }
+}
+
+pub fn config_keep_empty(lang: Lang) -> &'static str {
+    match lang {
+        Lang::Ja => "  (空)  a で追加",
+        Lang::En => "  (empty)  press a to add",
+    }
+}
+
 pub fn config_input_title(lang: Lang, key: &str) -> String {
     match lang {
         Lang::Ja => format!(" 編集: {key} "),

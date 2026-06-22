@@ -286,21 +286,26 @@ pub fn save_path() -> Option<PathBuf> {
 
 /// 既存 config.toml に編集差分をマージして書き戻す (フォーマット・コメント保持)。
 /// 親ディレクトリは必要に応じて mkdir -p、書き込みは tmp → rename の atomic 経路。
+/// path が symlink の場合は実体側に書き戻し、dotfiles 管理経路 (`~/.config/chira/config.toml`
+/// → `~/dotfiles/...`) を壊さない。
 pub fn save(path: &Path, edit: &ConfigEdit) -> io::Result<()> {
     let text = match fs::read_to_string(path) {
         Ok(s) => s,
         Err(e) if e.kind() == io::ErrorKind::NotFound => String::new(),
         Err(e) => return Err(e),
     };
-    let new_text = apply_edit(&text, edit).map_err(io::Error::other)?;
-    if let Some(parent) = path.parent()
+    let new_text = apply_edit(&text, edit)?;
+    // symlink (dotfiles 経路) は target 側へ書き戻す。symlink 解決失敗 (broken link 等) は
+    // 通常 path で続行 (read 段階で NotFound にならない限りこのケースは入らない)。
+    let target = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    if let Some(parent) = target.parent()
         && !parent.as_os_str().is_empty()
     {
         fs::create_dir_all(parent)?;
     }
-    let tmp = tmp_path(path);
+    let tmp = tmp_path(&target);
     fs::write(&tmp, new_text)?;
-    fs::rename(&tmp, path)?;
+    fs::rename(&tmp, &target)?;
     Ok(())
 }
 
@@ -315,22 +320,32 @@ fn tmp_path(path: &Path) -> PathBuf {
 }
 
 /// 既存 TOML テキストに編集差分を適用して文字列で返す (純関数。テストから直接叩く)。
-fn apply_edit(text: &str, edit: &ConfigEdit) -> Result<String, toml_edit::TomlError> {
+/// エラー: TOML parse 失敗 / TTL が i64::MAX 超 (= TOML integer は i64 のため round-trip 不能)。
+fn apply_edit(text: &str, edit: &ConfigEdit) -> io::Result<String> {
     let mut doc: DocumentMut = if text.is_empty() {
         DocumentMut::new()
     } else {
-        text.parse()?
+        text.parse().map_err(io::Error::other)?
     };
     set_or_remove_str(doc.as_table_mut(), "dir", edit.dir.as_deref());
     set_or_remove_str(doc.as_table_mut(), "editor", edit.editor.as_deref());
     set_or_remove_str(doc.as_table_mut(), "shell", edit.shell.as_deref());
     if needs_archive_table(edit) {
+        // inline form (`archive = { ttl_days = 7 }`) を standard table に coerce して
+        // 既存設定からの編集を silent skip しないよう、まず inline / 非 table を弾く
+        coerce_to_table(doc.as_table_mut(), "archive");
         let archive = doc
             .entry("archive")
             .or_insert(toml_edit::Item::Table(toml_edit::Table::new()));
         if let Some(t) = archive.as_table_mut() {
             if let Some(n) = edit.archive_ttl_days {
-                t.insert("ttl_days", value(n as i64));
+                let signed = i64::try_from(n).map_err(|_| {
+                    io::Error::other(format!(
+                        "archive.ttl_days {n} exceeds TOML integer range (max {})",
+                        i64::MAX
+                    ))
+                })?;
+                t.insert("ttl_days", value(signed));
             }
             if let Some(s) = edit.archive_dir.as_deref() {
                 set_or_remove_str(t, "dir", Some(s));
@@ -348,6 +363,25 @@ fn apply_edit(text: &str, edit: &ConfigEdit) -> Result<String, toml_edit::TomlEr
         }
     }
     Ok(doc.to_string())
+}
+
+/// `[key]` が inline table / 非 table の場合に standard table へ書き換える。
+/// 既に standard table、または存在しない場合は no-op (or_insert 側で table 生成)。
+/// inline → standard 変換時に元の key/value を保持する。
+fn coerce_to_table(doc: &mut toml_edit::Table, key: &str) {
+    let Some(item) = doc.get_mut(key) else {
+        return;
+    };
+    if item.is_table() {
+        return;
+    }
+    let mut t = toml_edit::Table::new();
+    if let Some(inline) = item.as_inline_table() {
+        for (k, v) in inline.iter() {
+            t.insert(k, toml_edit::Item::Value(v.clone()));
+        }
+    }
+    *item = toml_edit::Item::Table(t);
 }
 
 fn needs_archive_table(edit: &ConfigEdit) -> bool {
@@ -807,6 +841,41 @@ unrelated_key = \"keep me\"
         let original = "dir = \"/x\"\n# c\n[archive]\nttl_days = 1\n";
         let out = apply_edit(original, &ConfigEdit::default()).unwrap();
         assert_eq!(out, original);
+    }
+
+    #[test]
+    fn apply_edit_rejects_ttl_over_i64_max() {
+        // TOML integer は i64。u64::MAX 等 i64 範囲外の値は round-trip 不能なので
+        // wrap で負値書き込み → 次回 load で silent unset、を防ぐため Err にする
+        let edit = ConfigEdit {
+            archive_ttl_days: Some(i64::MAX as u64 + 1),
+            ..Default::default()
+        };
+        let err = apply_edit("", &edit).unwrap_err();
+        assert!(err.to_string().contains("ttl_days"));
+
+        // i64::MAX 以下は OK
+        let edit_ok = ConfigEdit {
+            archive_ttl_days: Some(i64::MAX as u64),
+            ..Default::default()
+        };
+        assert!(apply_edit("", &edit_ok).is_ok());
+    }
+
+    #[test]
+    fn apply_edit_coerces_inline_archive_table() {
+        // 既存 config が inline form (`archive = { ttl_days = 7 }`) でも、
+        // standard table へ昇格してから書き込むので edit が silent skip されない
+        let original = "archive = { ttl_days = 7, dir = \"~/old\" }\n";
+        let edit = ConfigEdit {
+            archive_ttl_days: Some(30),
+            ..Default::default()
+        };
+        let out = apply_edit(original, &edit).unwrap();
+        let parsed = parse(&out).unwrap();
+        assert_eq!(parsed.archive.ttl_days, Some(30));
+        // 元の値は coerce 時に保持
+        assert_eq!(parsed.archive.dir.as_deref(), Some("~/old"));
     }
 
     #[test]

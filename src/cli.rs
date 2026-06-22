@@ -765,23 +765,16 @@ mod tests {
     #[test]
     fn cmd_gc_returns_2_when_ttl_missing() {
         // TTL は --ttl も config.archive.ttl_days も無いと exit 2 (誤って全消えを防ぐ契約)
+        // env::set_var("CHIRA_DIR", ...) でなく config.dir 経由で root を渡す: test runner は
+        // 並列実行で env を共有するため set_var は他テストの scratch::root() (env > config 優先)
+        // と race し、削除済み dir を canonicalize して "No such file or directory" で flake する。
         let root = temp_root();
-        // CHIRA_DIR を test-local に向けて scratch::root が安全に呼べる状態にする
-        let prev = std::env::var_os("CHIRA_DIR");
-        // SAFETY: 環境変数操作は test 内に閉じ、後で復帰する
-        unsafe {
-            std::env::set_var("CHIRA_DIR", &root);
-        }
-        let config = Config::default(); // archive.ttl_days = None
+        let config = Config {
+            dir: Some(root.to_string_lossy().into_owned()),
+            ..Default::default() // archive.ttl_days = None
+        };
         let code = cmd_gc(Lang::En, &config, vec![]);
         assert_eq!(code, 2);
-        // 後始末
-        unsafe {
-            match prev {
-                Some(v) => std::env::set_var("CHIRA_DIR", v),
-                None => std::env::remove_var("CHIRA_DIR"),
-            }
-        }
         std::fs::remove_dir_all(&root).unwrap();
     }
 

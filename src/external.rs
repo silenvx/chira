@@ -45,6 +45,24 @@ pub fn spawn_shell(lang: Lang, dir: &Path, config_shell: Option<&str>) -> io::Re
         .status()
 }
 
+/// アクションの `run` を新ディレクトリ内で `sh -c` 実行する。
+/// editor/shell と違い `run` は `&&` / `|` / `~` / `$VAR` を含む shell コマンドラインなので、
+/// argv 分割 (command_argv) ではなく shell に解釈させる。CHIRA_* 環境変数と cwd を渡す。
+pub fn spawn_run(dir: &Path, root: &Path, command: &str) -> io::Result<ExitStatus> {
+    let name = dir
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    Command::new("/bin/sh")
+        .arg("-c")
+        .arg(command)
+        .current_dir(dir)
+        .env("CHIRA_TARGET", dir)
+        .env("CHIRA_TARGET_NAME", name)
+        .env("CHIRA_ROOT", root)
+        .status()
+}
+
 /// 外部プロセス名の解決: env > config > ハードコード default。空文字は未設定扱い。
 pub fn resolve_external(env_val: Option<&str>, config_val: Option<&str>, default: &str) -> String {
     env_val
@@ -99,6 +117,35 @@ mod tests {
             ["/My Apps/subl", "-w"]
         );
         assert!(command_argv(l, "").is_err());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn spawn_run_executes_in_dir_with_env() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static COUNTER: AtomicU32 = AtomicU32::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("chira-run-{}-{}", std::process::id(), n));
+        std::fs::create_dir_all(&dir).unwrap();
+        let root = dir.parent().unwrap();
+
+        // && チェイン + 3 つの CHIRA_* env 展開 + cwd 解決を一度に検証する
+        let status = spawn_run(
+            &dir,
+            root,
+            "printf '%s\\n%s\\n%s\\n' \"$CHIRA_TARGET_NAME\" \"$CHIRA_TARGET\" \"$CHIRA_ROOT\" > out.txt",
+        )
+        .unwrap();
+        assert!(status.success());
+
+        let content = std::fs::read_to_string(dir.join("out.txt")).unwrap();
+        let name = dir.file_name().unwrap().to_string_lossy();
+        let mut lines = content.lines();
+        assert_eq!(lines.next().unwrap(), name);
+        assert_eq!(lines.next().unwrap(), dir.to_str().unwrap());
+        assert_eq!(lines.next().unwrap(), root.to_str().unwrap());
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

@@ -443,7 +443,10 @@ fn config_row_line<'a>(
         Span::raw("  "),
         source_span(app, &source),
     ];
-    if matches!(source, Source::Env(_)) {
+    // env override badge は元の effective source (起動時の優先順位) で判定する。
+    // 編集して state.edit に値が入ると source は Config に変わるが、env は依然優先される
+    // ため badge を消すと「保存値が有効」とユーザーを誤認させる
+    if matches!(effective_source(state, item), Source::Env(_)) {
         spans.push(Span::raw("  "));
         spans.push(Span::styled(
             i18n::config_env_override_badge(app.lang),
@@ -456,7 +459,6 @@ fn config_row_line<'a>(
 fn render_config_detail(frame: &mut Frame, app: &App, state: &ConfigState, area: Rect) {
     let item = ConfigItem::ALL[state.selected];
     let help = help_for(app.lang, item);
-    let (_value, source) = value_and_source(state, item);
 
     let mut lines = vec![
         Line::from(vec![
@@ -473,7 +475,8 @@ fn render_config_detail(frame: &mut Frame, app: &App, state: &ConfigState, area:
             Span::raw(help.resolution),
         ]),
     ];
-    if let Source::Env(var) = source {
+    // env override note も元の effective source で判定 (badge と同じ理由)
+    if let Source::Env(var) = effective_source(state, item) {
         lines.push(Line::from(Span::styled(
             i18n::config_env_override_note(app.lang, var),
             Style::new().fg(Color::Yellow),
@@ -568,6 +571,21 @@ fn value_and_source(state: &ConfigState, item: ConfigItem) -> (String, Source) {
             };
             (s, src)
         }
+    }
+}
+
+/// state.effective から item の元 source (env / config / default) を取り出す。
+/// value_and_source は state.edit を含む見かけの source を返すため、
+/// env override badge / note の判定にはこちら (起動時の優先順位を反映) を使う。
+fn effective_source(state: &ConfigState, item: ConfigItem) -> Source {
+    match item {
+        ConfigItem::Dir => state.effective.dir.1.clone(),
+        ConfigItem::Editor => state.effective.editor.1.clone(),
+        ConfigItem::Shell => state.effective.shell.1.clone(),
+        ConfigItem::ArchiveTtlDays => state.effective.archive_ttl_days.1.clone(),
+        ConfigItem::ArchiveDir => state.effective.archive_dir.1.clone(),
+        ConfigItem::ArchiveOnStartup => state.effective.archive_on_startup.1.clone(),
+        ConfigItem::ArchiveKeep => state.effective.archive_keep.1.clone(),
     }
 }
 

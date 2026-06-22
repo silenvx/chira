@@ -670,6 +670,14 @@ impl App {
         let item = ConfigItem::ALL[state.selected];
         let raw = self.input.clone();
         let trimmed = raw.trim();
+        // env override 中の string 項目で初期値「空文字」のまま Enter を押すと、
+        // current_value_string が env 値を出さない設計の副作用で Some("") = 削除になり、
+        // 元の config 値を silent 削除しうる。明示的に何も入力せず確定した場合は no-op。
+        if trimmed.is_empty() && is_env_backed_string_initial_edit(state, item) {
+            self.input.clear();
+            state.submode = ConfigSubmode::Browse;
+            return;
+        }
         match item {
             ConfigItem::Dir => {
                 state.edit.dir = Some(trimmed.to_string());
@@ -856,6 +864,25 @@ fn effective_initial(effective: &(String, crate::config::Source)) -> String {
     match &effective.1 {
         Source::Env(_) => String::new(),
         _ => effective.0.clone(),
+    }
+}
+
+/// env 由来の string 項目で、ユーザーが未編集 (`state.edit` に値なし) の状態かを判定する。
+/// 編集モード初期値が空文字 (`effective_initial` 経由) で開始する条件と一致しており、
+/// 空のまま Enter された場合の silent 削除を防ぐ no-op ガードに使う。
+fn is_env_backed_string_initial_edit(state: &ConfigState, item: ConfigItem) -> bool {
+    use crate::config::Source;
+    match item {
+        ConfigItem::Dir => {
+            state.edit.dir.is_none() && matches!(&state.effective.dir.1, Source::Env(_))
+        }
+        ConfigItem::Editor => {
+            state.edit.editor.is_none() && matches!(&state.effective.editor.1, Source::Env(_))
+        }
+        ConfigItem::Shell => {
+            state.edit.shell.is_none() && matches!(&state.effective.shell.1, Source::Env(_))
+        }
+        _ => false,
     }
 }
 
@@ -1165,6 +1192,29 @@ mod tests {
         app.on_key(key('d'));
         let keep = &app.config_state.as_ref().unwrap().keep;
         assert!(keep.is_empty());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn config_edit_env_override_empty_enter_is_noop() {
+        // env override 中の項目で空入力のまま Enter → no-op (state.edit に Some("") を入れない)。
+        // Some("") は config.rs 側でキー削除扱いになるため、env override 中に edit 値が空のまま
+        // 保存されると元の config 値を silent 削除しうる
+        let root = temp_root();
+        let mut app = App::with_root(root.clone(), Lang::En, Config::default());
+        app.on_key(key(','));
+        // Editor (index 1) を env override 状態にする
+        app.config_state.as_mut().unwrap().effective.editor = (
+            "/usr/bin/env-editor".into(),
+            crate::config::Source::Env("EDITOR"),
+        );
+        app.on_key(special(KeyCode::Down));
+        app.on_key(special(KeyCode::Enter));
+        // 初期値は空 (env override 規範) のまま Enter
+        assert_eq!(app.input, "");
+        app.on_key(special(KeyCode::Enter));
+        // state.edit.editor は None のまま (silent 削除を起こす Some("") にならない)
+        assert_eq!(app.config_state.as_ref().unwrap().edit.editor, None);
         std::fs::remove_dir_all(&root).unwrap();
     }
 

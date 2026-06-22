@@ -110,6 +110,32 @@ Like vim, `h`/`j`/`k`/`l` navigate (`h` = parent, `l` = open), and arrow keys wo
 
 Quitting `$EDITOR` (default `vi`) or the shell opened with `s` (default `/bin/sh`) returns you to the TUI, and any files created in the meantime show up in the list automatically. Create / rename / delete are reflected on disk immediately.
 
+## CLI subcommands
+
+Running `chira` with no arguments launches the TUI. Pass a subcommand to run a one-shot CLI operation instead — useful for piping (`chira ls | fzf`), scripts, or quick `cd` integration without spinning up the TUI.
+
+| Subcommand | TUI equivalent | Notes |
+|---|---|---|
+| `chira ls [<path>]` | (list view) | One name per line; `-l` prints `<mtime>\t<size>\t<name>` |
+| `chira tree [<path>]` | (right pane) | Tree view (depth 4, up to 100 lines) |
+| `chira new <name>` | `n` | Create a file and open `$EDITOR`; `--no-edit` skips the editor |
+| `chira mkdir <name>` | `N` | Create a directory |
+| `chira edit <name>` | `e` | Open `<name>` in `$EDITOR` |
+| `chira shell [<dir>]` | `s` | Open `$SHELL` in `<dir>` (or in `CHIRA_DIR` if omitted) |
+| `chira rm <name>` | `d` | Delete; `-r` is required for directories, `-f` skips confirmation |
+| `chira mv <old> <new>` | `r` | Rename |
+| `chira path [<name>]` | — | Print the full path of an entry (or `CHIRA_DIR` if omitted) |
+| `chira find <query> [<path>]` | `/` | List entries whose name matches the substring (`ls`-style output) |
+
+Output is biased toward machine-readability: `ls` / `find` print one name per line, color and the trailing `/` for directories appear only when stdout is a TTY. Errors go to stderr; missing entries exit `1`, argument errors exit `2`. Destructive operations (`rm` / `mv`) verify that the target is under `CHIRA_DIR` (canonicalized; `..` and symlink escapes are rejected).
+
+`chira path` enables shell-side `cd` without launching the TUI:
+
+```sh
+cd "$(chira path)"               # cd into CHIRA_DIR
+cd "$(chira path my-experiment)" # cd into a specific entry
+```
+
 ## Development
 
 ```sh

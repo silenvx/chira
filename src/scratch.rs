@@ -233,6 +233,37 @@ pub fn read_text(path: &Path) -> io::Result<String> {
     fs::read_to_string(path)
 }
 
+/// path を canonicalize して root 配下にあることを保証する。
+/// CLI の破壊的操作で `..` や symlink 経由の root escape を一律に止めるためのガード。
+pub fn ensure_under_root(root: &Path, path: &Path) -> io::Result<PathBuf> {
+    let canonical_root = root.canonicalize()?;
+    let canonical_target = path.canonicalize()?;
+    if !canonical_target.starts_with(&canonical_root) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "path escapes scratch root",
+        ));
+    }
+    Ok(canonical_target)
+}
+
+/// 既存パスから Entry を組み立てる (CLI から rename / remove を呼ぶための adapter)。
+/// is_dir は symlink を辿らず lstat で判定し、broken symlink を file 扱いで listing と整合させる。
+pub fn entry_from_path(path: &Path) -> io::Result<Entry> {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let meta = path.symlink_metadata()?;
+    let modified = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+    Ok(Entry {
+        path: path.to_path_buf(),
+        name,
+        is_dir: meta.is_dir(),
+        modified,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
@@ -459,6 +490,49 @@ mod tests {
         assert_eq!(listed[0].name, "new.md", "更新が新しい順");
         assert_eq!(listed[1].name, "old.md");
         assert!(old.exists());
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn ensure_under_root_accepts_nested_path() {
+        let root = temp_root();
+        let nested = create_dir(&root, "ws").unwrap();
+        create_file(&nested, "inner.md").unwrap();
+        // root 配下のネストパスは通る
+        assert!(ensure_under_root(&root, &nested).is_ok());
+        assert!(ensure_under_root(&root, &nested.join("inner.md")).is_ok());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn ensure_under_root_rejects_symlink_escape() {
+        let root = temp_root();
+        // 外部ディレクトリを root 配下の symlink で参照しても canonicalize で見抜く
+        let outside = env::temp_dir().join(format!("chira-outside-{}", std::process::id()));
+        fs::create_dir_all(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("escape")).unwrap();
+        assert!(ensure_under_root(&root, &root.join("escape")).is_err());
+        fs::remove_dir_all(&root).unwrap();
+        fs::remove_dir_all(&outside).unwrap();
+    }
+
+    #[test]
+    fn entry_from_path_reports_dir_and_file() {
+        let root = temp_root();
+        let dir = create_dir(&root, "ws").unwrap();
+        let file = create_file(&root, "note.md").unwrap();
+
+        let e_dir = entry_from_path(&dir).unwrap();
+        assert!(e_dir.is_dir);
+        assert_eq!(e_dir.name, "ws");
+
+        let e_file = entry_from_path(&file).unwrap();
+        assert!(!e_file.is_dir);
+        assert_eq!(e_file.name, "note.md");
+
+        // 不在パスはエラー
+        assert!(entry_from_path(&root.join("missing")).is_err());
 
         fs::remove_dir_all(&root).unwrap();
     }

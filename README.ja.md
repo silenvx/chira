@@ -110,6 +110,32 @@ vim と同じく `h`/`j`/`k`/`l` で移動（`h`=親、`l`=開く）でき、方
 
 `$EDITOR`（未設定なら `vi`）や `s` で開いたシェル（未設定なら `/bin/sh`）を終了すると TUI に復帰し、その間に作られたファイルも一覧へ自動反映される。作成・改名・削除はディスクへ即反映される。
 
+## CLI サブコマンド
+
+引数なしの `chira` は従来どおり TUI を起動する。サブコマンドを渡すと 1 ショットの CLI として動く。`chira ls | fzf` のようなパイプ連携、スクリプト、TUI を立ち上げずに `cd` だけしたいケース等に使う。
+
+| サブコマンド | TUI 対応キー | 説明 |
+|---|---|---|
+| `chira ls [<path>]` | （一覧表示） | 1 行 1 件で名前のみ。`-l` で `<mtime>\t<size>\t<name>` |
+| `chira tree [<path>]` | （右ペイン） | `tree` 風表示（深さ 4・最大 100 行） |
+| `chira new <name>` | `n` | 新規ファイル作成 + `$EDITOR` で開く（`--no-edit` でエディタを開かない） |
+| `chira mkdir <name>` | `N` | 新規ディレクトリ作成 |
+| `chira edit <name>` | `e` | `<name>` を `$EDITOR` で開く |
+| `chira shell [<dir>]` | `s` | `<dir>`（省略時は `CHIRA_DIR`）で `$SHELL` を開く |
+| `chira rm <name>` | `d` | 削除。ディレクトリは `-r` 必須、`-f` で確認スキップ |
+| `chira mv <old> <new>` | `r` | リネーム |
+| `chira path [<name>]` | — | エントリのフルパスを出力（省略時は `CHIRA_DIR`） |
+| `chira find <query> [<path>]` | `/` | 名前で絞り込み一覧（substring match、`ls` 同様の書式） |
+
+出力は機械可読寄り。`ls` / `find` は 1 行 1 名前で、色やディレクトリの末尾 `/` は stdout が TTY のときだけ付く。エラーは stderr、不在エントリは exit 1、引数誤りは exit 2 になる。破壊的操作（`rm` / `mv`）は対象パスが `CHIRA_DIR` 配下にあることを canonicalize して検証する（`..` や symlink 経由の root escape は拒否）。
+
+`chira path` を使うと TUI を立ち上げずに shell 側で `cd` できる:
+
+```sh
+cd "$(chira path)"               # CHIRA_DIR へ cd
+cd "$(chira path my-experiment)" # 任意エントリへ cd
+```
+
 ## 開発
 
 ```sh

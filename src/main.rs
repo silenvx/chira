@@ -1,4 +1,5 @@
 mod app;
+mod archive;
 mod cli;
 mod config;
 mod external;
@@ -52,6 +53,12 @@ fn main() -> io::Result<()> {
     };
 
     let config = config::load(lang);
+    // 起動時 sweep (opt-in)。失敗しても TUI 起動は止めず、stderr に warning が残る
+    if config.archive.on_startup
+        && let Err(e) = run_startup_sweep(lang, &config)
+    {
+        eprintln!("{}", i18n::err_gc_sweep(lang, &e));
+    }
     let mut app = App::new(config.dir.as_deref())?;
     let mut terminal = ratatui::init();
     let result = run(&mut terminal, &mut app, &config);
@@ -61,6 +68,43 @@ fn main() -> io::Result<()> {
     // 起動元シェルが cd するための最終ディレクトリを書き出す
     if let Some(path) = cd_file {
         fs::write(path, app.cwd.as_os_str().as_bytes())?;
+    }
+    Ok(())
+}
+
+fn run_startup_sweep(lang: i18n::Lang, config: &Config) -> io::Result<()> {
+    // ttl_days 未設定なら on_startup を立てていても no-op (誤って全消えを防ぐ)
+    let Some(ttl_days) = config.archive.ttl_days.filter(|d| *d > 0) else {
+        return Ok(());
+    };
+    let root = scratch::root(config.dir.as_deref())?;
+    let archive_dir_str = config.archive.dir.as_deref();
+    let home = env::var_os("HOME")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from);
+    let archive_dir = match archive_dir_str.filter(|s| !s.is_empty()) {
+        Some(s) => {
+            let resolved = scratch::expand_tilde(s, home.as_deref())?;
+            // 相対 path は detect_archive_root_conflict の比較が機能するよう絶対化
+            if resolved.is_absolute() {
+                resolved
+            } else {
+                env::current_dir()?.join(resolved)
+            }
+        }
+        None => root.join(archive::DEFAULT_ARCHIVE_DIRNAME),
+    };
+    let opts = archive::Options {
+        root: &root,
+        archive_dir,
+        ttl: std::time::Duration::from_secs(ttl_days * 86_400),
+        keep_patterns: &config.archive.keep,
+        dry_run: false,
+        now: std::time::SystemTime::now(),
+    };
+    let report = archive::sweep(lang, opts)?;
+    for err in &report.errors {
+        eprintln!("{err}");
     }
     Ok(())
 }

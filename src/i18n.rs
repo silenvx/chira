@@ -79,6 +79,8 @@ TUI オプション:
   mv <old> <new>           リネーム
   path [<name>]            エントリのフルパスを出力 (cd 連携用)
   find <query> [<path>]    名前で絞り込み一覧 (substring match)
+  gc [--ttl <dur>] [--archive-dir <path>] [--dry-run]
+                           mtime が TTL を超えたエントリを archive へ移動
 "
         }
         Lang::En => {
@@ -105,6 +107,8 @@ Subcommands:
   mv <old> <new>           Rename
   path [<name>]            Print the full path of an entry (for cd integration)
   find <query> [<path>]    List entries whose name matches the substring
+  gc [--ttl <dur>] [--archive-dir <path>] [--dry-run]
+                           Move entries whose mtime exceeds TTL to the archive dir
 "
         }
     }
@@ -114,6 +118,111 @@ pub fn err_cd_file_needs_arg(lang: Lang) -> &'static str {
     match lang {
         Lang::Ja => "--cd-file には引数が必要です\n",
         Lang::En => "--cd-file requires an argument\n",
+    }
+}
+
+pub fn err_option_needs_arg(lang: Lang, opt: &str) -> String {
+    match lang {
+        Lang::Ja => format!("{opt} には引数が必要です\n"),
+        Lang::En => format!("{opt} requires an argument\n"),
+    }
+}
+
+pub fn err_gc_ttl_missing(lang: Lang) -> &'static str {
+    match lang {
+        Lang::Ja => {
+            "TTL が指定されていません。--ttl <dur> または config.toml の [archive] ttl_days を設定してください\n"
+        }
+        Lang::En => "No TTL specified. Pass --ttl <dur> or set [archive] ttl_days in config.toml\n",
+    }
+}
+
+pub fn err_gc_ttl_invalid(lang: Lang, e: &dyn std::fmt::Display) -> String {
+    match lang {
+        Lang::Ja => format!("--ttl の解釈に失敗: {e}\n"),
+        Lang::En => format!("Failed to parse --ttl: {e}\n"),
+    }
+}
+
+pub fn err_gc_sweep(lang: Lang, e: &dyn std::fmt::Display) -> String {
+    match lang {
+        Lang::Ja => format!("archive 中にエラー: {e}\n"),
+        Lang::En => format!("Error while archiving: {e}\n"),
+    }
+}
+
+pub fn warn_archive_mkdir(
+    lang: Lang,
+    path: &dyn std::fmt::Display,
+    e: &dyn std::fmt::Display,
+) -> String {
+    match lang {
+        Lang::Ja => format!("archive ディレクトリの作成に失敗 ({path}): {e}"),
+        Lang::En => format!("Failed to create archive directory ({path}): {e}"),
+    }
+}
+
+pub fn warn_archive_move(
+    lang: Lang,
+    name: &str,
+    dest: &dyn std::fmt::Display,
+    e: &dyn std::fmt::Display,
+) -> String {
+    match lang {
+        Lang::Ja => format!("{name} の archive に失敗 (→ {dest}): {e}"),
+        Lang::En => format!("Failed to archive {name} (→ {dest}): {e}"),
+    }
+}
+
+pub fn warn_archive_mtime(lang: Lang, name: &str, e: &dyn std::fmt::Display) -> String {
+    match lang {
+        Lang::Ja => format!("{name} の mtime 取得に失敗 (skip): {e}"),
+        Lang::En => format!("Failed to read mtime for {name} (skipped): {e}"),
+    }
+}
+
+pub fn warn_archive_keep_probe(lang: Lang, name: &str, e: &dyn std::fmt::Display) -> String {
+    match lang {
+        Lang::Ja => format!("{name} の .keep 確認に失敗 (skip、保護側に倒す): {e}"),
+        Lang::En => {
+            format!("Failed to probe .keep in {name} (skipped, erring on the protected side): {e}")
+        }
+    }
+}
+
+pub fn gc_dry_run_header(lang: Lang) -> &'static str {
+    match lang {
+        Lang::Ja => "dry-run: 以下のエントリを archive します",
+        Lang::En => "dry-run: the following entries would be archived",
+    }
+}
+
+pub fn gc_dry_run_entry(name: &str, dest: &dyn std::fmt::Display) -> String {
+    format!("  {name} → {dest}")
+}
+
+pub fn gc_summary(lang: Lang, archived: usize, kept: usize, errors: usize) -> String {
+    match lang {
+        Lang::Ja => format!("archive 完了: {archived} 件移動 / {kept} 件保持 / {errors} 件エラー"),
+        Lang::En => {
+            format!("archived: {archived} moved / {kept} kept / {errors} errors")
+        }
+    }
+}
+
+pub fn gc_summary_dry_run(lang: Lang, candidates: usize, kept: usize, errors: usize) -> String {
+    match lang {
+        Lang::Ja => {
+            format!("dry-run: {candidates} 件が候補 / {kept} 件は対象外 / {errors} 件エラー")
+        }
+        Lang::En => format!("dry-run: {candidates} candidate(s) / {kept} kept / {errors} errors"),
+    }
+}
+
+pub fn gc_archived(lang: Lang, name: &str, dest: &dyn std::fmt::Display) -> String {
+    match lang {
+        Lang::Ja => format!("移動: {name} → {dest}"),
+        Lang::En => format!("moved: {name} → {dest}"),
     }
 }
 

@@ -1,16 +1,18 @@
 use std::io::{self, BufRead, IsTerminal, Write};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
 
 use chrono::{DateTime, Local};
 
+use crate::archive;
 use crate::config::Config;
 use crate::external;
 use crate::i18n::{self, Lang};
 use crate::scratch::{self, Entry};
 
 const SUBCOMMANDS: &[&str] = &[
-    "ls", "tree", "new", "mkdir", "edit", "shell", "rm", "mv", "path", "find",
+    "ls", "tree", "new", "mkdir", "edit", "shell", "rm", "mv", "path", "find", "gc", "archive",
 ];
 
 pub fn is_subcommand(s: &str) -> bool {
@@ -35,10 +37,175 @@ pub fn run(lang: Lang, config: &Config, sub: &str, args: Vec<String>) -> i32 {
         "mv" => cmd_mv(lang, config, args),
         "path" => cmd_path(lang, config, args),
         "find" => cmd_find(lang, config, args),
+        "gc" | "archive" => cmd_gc(lang, config, args),
         _ => {
             eprint!("{}", i18n::err_unknown_subcommand(lang, sub));
             2
         }
+    }
+}
+
+#[derive(Default)]
+struct GcArgs {
+    ttl: Option<String>,
+    archive_dir: Option<PathBuf>,
+    dry_run: bool,
+}
+
+fn parse_gc_args(lang: Lang, args: Vec<String>) -> Result<GcArgs, String> {
+    let mut out = GcArgs::default();
+    let mut iter = args.into_iter();
+    // option の引数が次の `--xxx` flag を誤って消費する事故を防ぐガード
+    // (例: `gc --ttl 30d --archive-dir --dry-run` で --dry-run が archive-dir 値になり、
+    //  silent に dry-run が無効化されて実 archive されるのを防ぐ)
+    let take_value = |iter: &mut std::vec::IntoIter<String>, opt: &str| -> Result<String, String> {
+        let v = iter
+            .next()
+            .ok_or_else(|| i18n::err_option_needs_arg(lang, opt))?;
+        if v.starts_with('-') {
+            return Err(i18n::err_option_needs_arg(lang, opt));
+        }
+        Ok(v)
+    };
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--dry-run" => out.dry_run = true,
+            "--ttl" => out.ttl = Some(take_value(&mut iter, "--ttl")?),
+            "--archive-dir" => {
+                out.archive_dir = Some(PathBuf::from(take_value(&mut iter, "--archive-dir")?));
+            }
+            other => {
+                if let Some(v) = other.strip_prefix("--ttl=") {
+                    out.ttl = Some(v.to_string());
+                } else if let Some(v) = other.strip_prefix("--archive-dir=") {
+                    out.archive_dir = Some(PathBuf::from(v));
+                } else {
+                    return Err(i18n::err_cli_unknown_flag(lang, "gc", other));
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn cmd_gc(lang: Lang, config: &Config, args: Vec<String>) -> i32 {
+    let parsed = match parse_gc_args(lang, args) {
+        Ok(a) => a,
+        Err(msg) => {
+            eprint!("{msg}");
+            return 2;
+        }
+    };
+    // TTL は CLI > config の順で解決し、両方未設定/解析不能なら exit 2 で終了する
+    let ttl = match parsed.ttl.as_deref() {
+        Some(s) => match archive::parse_duration(s) {
+            Ok(d) => d,
+            Err(e) => {
+                eprint!("{}", i18n::err_gc_ttl_invalid(lang, &e));
+                return 2;
+            }
+        },
+        None => match config.archive.ttl_days.filter(|d| *d > 0) {
+            Some(d) => Duration::from_secs(d * 86_400),
+            None => {
+                eprint!("{}", i18n::err_gc_ttl_missing(lang));
+                return 2;
+            }
+        },
+    };
+
+    let root = match scratch::root(config.dir.as_deref()) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("{}", i18n::err_gc_sweep(lang, &e));
+            return 1;
+        }
+    };
+    let archive_dir = match resolve_archive_dir(
+        &root,
+        config.archive.dir.as_deref(),
+        parsed.archive_dir.as_deref(),
+    ) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("{}", i18n::err_gc_sweep(lang, &e));
+            return 1;
+        }
+    };
+    let opts = archive::Options {
+        root: &root,
+        archive_dir,
+        ttl,
+        keep_patterns: &config.archive.keep,
+        dry_run: parsed.dry_run,
+        now: SystemTime::now(),
+    };
+    let report = match archive::sweep(lang, opts) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("{}", i18n::err_gc_sweep(lang, &e));
+            return 1;
+        }
+    };
+
+    if parsed.dry_run {
+        if !report.archived.is_empty() {
+            println!("{}", i18n::gc_dry_run_header(lang));
+            for o in &report.archived {
+                println!("{}", i18n::gc_dry_run_entry(&o.name, &o.dest.display()));
+            }
+        }
+        println!(
+            "{}",
+            i18n::gc_summary_dry_run(
+                lang,
+                report.archived.len(),
+                report.kept,
+                report.errors.len()
+            )
+        );
+    } else {
+        for o in &report.archived {
+            println!("{}", i18n::gc_archived(lang, &o.name, &o.dest.display()));
+        }
+        println!(
+            "{}",
+            i18n::gc_summary(
+                lang,
+                report.archived.len(),
+                report.kept,
+                report.errors.len()
+            )
+        );
+    }
+    for err in &report.errors {
+        eprintln!("{err}");
+    }
+    if !report.errors.is_empty() { 1 } else { 0 }
+}
+
+/// archive 先の解決順: CLI flag > config dir > <CHIRA_DIR>/.archive。
+/// CLI / config 双方 `~` は HOME へ展開 (シェル非経由起動 / quoted `'~/old'` を一様に扱う)。
+/// 相対 path は current_dir で絶対化 (detect_archive_root_conflict の比較が機能するため)
+fn resolve_archive_dir(
+    root: &Path,
+    config_dir: Option<&str>,
+    cli: Option<&Path>,
+) -> io::Result<PathBuf> {
+    let home = std::env::var_os("HOME")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from);
+    let resolved = if let Some(p) = cli {
+        scratch::expand_tilde(&p.to_string_lossy(), home.as_deref())?
+    } else if let Some(s) = config_dir.filter(|s| !s.is_empty()) {
+        scratch::expand_tilde(s, home.as_deref())?
+    } else {
+        return Ok(root.join(archive::DEFAULT_ARCHIVE_DIRNAME));
+    };
+    if resolved.is_absolute() {
+        Ok(resolved)
+    } else {
+        Ok(std::env::current_dir()?.join(resolved))
     }
 }
 
@@ -585,13 +752,37 @@ mod tests {
     #[test]
     fn is_subcommand_matches_known() {
         for s in [
-            "ls", "tree", "new", "mkdir", "edit", "shell", "rm", "mv", "path", "find",
+            "ls", "tree", "new", "mkdir", "edit", "shell", "rm", "mv", "path", "find", "gc",
+            "archive",
         ] {
             assert!(is_subcommand(s), "expected {s} to be a subcommand");
         }
         assert!(!is_subcommand(""));
         assert!(!is_subcommand("status"));
         assert!(!is_subcommand("--cd-file"));
+    }
+
+    #[test]
+    fn cmd_gc_returns_2_when_ttl_missing() {
+        // TTL は --ttl も config.archive.ttl_days も無いと exit 2 (誤って全消えを防ぐ契約)
+        let root = temp_root();
+        // CHIRA_DIR を test-local に向けて scratch::root が安全に呼べる状態にする
+        let prev = std::env::var_os("CHIRA_DIR");
+        // SAFETY: 環境変数操作は test 内に閉じ、後で復帰する
+        unsafe {
+            std::env::set_var("CHIRA_DIR", &root);
+        }
+        let config = Config::default(); // archive.ttl_days = None
+        let code = cmd_gc(Lang::En, &config, vec![]);
+        assert_eq!(code, 2);
+        // 後始末
+        unsafe {
+            match prev {
+                Some(v) => std::env::set_var("CHIRA_DIR", v),
+                None => std::env::remove_var("CHIRA_DIR"),
+            }
+        }
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

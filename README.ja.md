@@ -44,9 +44,11 @@ cargo install --locked chira
 chira() {
   local tmp; tmp="$(mktemp)" || return
   command chira --cd-file "$tmp" "$@"
+  local status=$?
   local dir; dir="$(cat "$tmp")"
   rm -f "$tmp"
   [ -n "$dir" ] && [ -d "$dir" ] && [ "$dir" != "$PWD" ] && cd "$dir"
+  return $status
 }
 ```
 
@@ -56,11 +58,15 @@ chira() {
 function chira
     set -l tmp (mktemp); or return
     command chira --cd-file $tmp $argv
+    set -l cmd_status $status
     set -l dir (cat $tmp)
     rm -f $tmp
     test -n "$dir"; and test -d "$dir"; and test "$dir" != "$PWD"; and cd "$dir"
+    return $cmd_status
 end
 ```
+
+最後の `return $status` で `chira gc` 等の CLI サブコマンド exit code (errors > 0 で 1、引数誤りで 2) が wrapper の戻り値にそのまま伝播する。TUI 経由で `cd` した場合も、`cd` の成否ではなく chira 本体の exit code が返る。
 
 これで `chira` → ディレクトリへ降りる → `q` 終了、でシェルがそのディレクトリに移動する。直後にシェル標準の `cd -` で元いた場所へ戻れる（`cd` が `OLDPWD` を設定するため）。
 
@@ -144,6 +150,7 @@ vim と同じく `h`/`j`/`k`/`l` で移動（`h`=親、`l`=開く）でき、方
 | `chira mv <old> <new>` | `r` | リネーム |
 | `chira path [<name>]` | — | エントリのフルパスを出力（省略時は `CHIRA_DIR`） |
 | `chira find <query> [<path>]` | `/` | 名前で絞り込み一覧（substring match、`ls` 同様の書式） |
+| `chira gc [--ttl <dur>] [--archive-dir <path>] [--dry-run]` | — | `mtime` が TTL を超えたエントリを archive へ移動（下記参照） |
 
 出力は機械可読寄り。`ls` / `find` は 1 行 1 名前で、色やディレクトリの末尾 `/` は stdout が TTY のときだけ付く。エラーは stderr、不在エントリは exit 1、引数誤りは exit 2 になる。破壊的操作（`rm` / `mv`）は対象パスが `CHIRA_DIR` 配下にあることを canonicalize して検証する（`..` や symlink 経由の root escape は拒否）。symlink に対する `rm` は unix の `rm` 同様 symlink 自体を消す（target は辿らない）。非対話（stdin が非 TTY）では `rm` は `-f` が必須で、未指定時は確認プロンプトが自動キャンセルされ exit 1 になる。`rm` / `mv` は scratch root 自身（`.` / 空文字列）への操作を拒否する（`CHIRA_DIR` 全消し防止）。
 
@@ -155,6 +162,51 @@ vim と同じく `h`/`j`/`k`/`l` で移動（`h`=親、`l`=開く）でき、方
 cd "$(chira path)"               # CHIRA_DIR へ cd
 cd "$(chira path my-experiment)" # 任意エントリへ cd
 ```
+
+## アーカイブ（chira gc）
+
+chira のエントリは使い捨て前提だが、手で消さない限り溜まり続ける。`chira gc` は `mtime` が TTL を超えたエントリを `<CHIRA_DIR>/.archive/` 配下へ move する（隠しディレクトリなので一覧からは消える）。アーカイブ後も素のファイル/ディレクトリのまま残るので、`find` / `grep` で発掘できる。
+
+```sh
+chira gc --ttl 30d              # 30 日触っていないエントリを archive
+chira gc --ttl 12h --dry-run    # 対象だけ表示（move しない）
+chira gc --archive-dir ~/old    # archive 先を別の場所にする
+```
+
+時間単位: `s` / `m` / `h` / `d` / `w`（単位なしは秒）。TTL は必須で、`--ttl` も `[archive] ttl_days` も無いと `chira gc` はエラーで終了する（未設定で実行して全消えする事故を防ぐため）。
+
+判定はエントリ自身の `mtime` のみ（`symlink_metadata` を使うため、正常な symlink はリンク自体の寿命で判定、リンク先は見ない）。relatime / noatime mount では atime が更新されないため atime は使わない。target が存在しない dangling symlink は「mtime 取れない」扱いで `errors` に積まれ、リンク自身の mtime では判定しない (broken symlink を意図せず archive しないため)。
+
+### 対象外
+
+TTL を超えても以下は移動せず、summary では `kept` にカウントされる:
+
+- `.archive/` 自身（再帰防止）
+- ディレクトリ直下に `.keep` ファイルがあるもの（lf / nnn 等の慣習）
+- `[archive] keep` の glob にマッチする名前（下記参照）
+
+mtime が取れないエントリ（壊れた symlink 等）は **errors** として別カテゴリ扱い — skip + stderr warning + `errors` にカウントされ、`kept` には含まれない。summary 行は `archived / kept / errors` を独立した 3 区分で表示し、`errors > 0` の場合は exit 1 で cron 等から検知できる。
+
+### 設定（`[archive]`）
+
+```toml
+[archive]
+# TTL（日数）。0 または未設定なら archive 機能 off（CLI --ttl による単発実行は可能）
+ttl_days = 30
+
+# archive 先。~ は展開される。省略時は <CHIRA_DIR>/.archive
+dir = "~/scratch-archive"
+
+# TUI 起動時に sweep するか。default false（毎回 sweep されると驚きが大きいため）
+on_startup = false
+
+# 名前がこれらの glob にマッチするものは保持する。末尾 `/` でディレクトリ限定
+keep = ["pinned-*", "longterm/"]
+```
+
+glob は `*`（任意の連続）と `?`（任意の 1 文字）のみ対応。末尾 `/` はディレクトリだけにマッチさせる。
+
+archive 先で同名衝突が起きた場合は `.<unix_ts>` suffix が付く（例: `old.md.1742278300`）。同じ秒に二度衝突したら `_1`, `_2` … と連番でユニーク化する。`dir` が `CHIRA_DIR` と別 filesystem だと `fs::rename` が `EXDEV` で失敗するので、その場合は同じ filesystem を指すこと（エラーは stderr に出る）。
 
 ## 開発
 

@@ -46,7 +46,8 @@ fn resolve_root(
 }
 
 /// config 由来のパスの先頭 `~` を $HOME へ展開する (env 由来のパスは shell が展開済み)。
-fn expand_tilde(s: &str, home: Option<&Path>) -> io::Result<PathBuf> {
+/// HOME が未設定で `~` を含む場合は Err。archive 系も同じ契約で揃えるため pub(crate)。
+pub(crate) fn expand_tilde(s: &str, home: Option<&Path>) -> io::Result<PathBuf> {
     if s == "~" {
         Ok(require_home(home)?.to_path_buf())
     } else if let Some(rest) = s.strip_prefix("~/") {

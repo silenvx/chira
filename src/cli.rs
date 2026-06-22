@@ -319,7 +319,8 @@ fn cmd_rm(lang: Lang, config: &Config, args: Vec<String>) -> i32 {
     let Some(root) = resolve_root(lang, config) else {
         return 1;
     };
-    let path = match resolve_existing_under_root(&root, Some(&name)) {
+    // rm は symlink を unix 慣習どおり symlink 自身に対して効かせるため lexical path を使う
+    let path = match resolve_lexical_under_root(&root, &name) {
         Ok(p) => p,
         Err(e) => return cli_error(lang, "rm", &e),
     };
@@ -385,7 +386,8 @@ fn cmd_mv(lang: Lang, config: &Config, args: Vec<String>) -> i32 {
     let Some(root) = resolve_root(lang, config) else {
         return 1;
     };
-    let path = match resolve_existing_under_root(&root, Some(old)) {
+    // mv も rm と同様に lexical path を使い、symlink/broken を unix 慣習どおり扱う
+    let path = match resolve_lexical_under_root(&root, old) {
         Ok(p) => p,
         Err(e) => return cli_error(lang, "mv", &e),
     };
@@ -506,6 +508,37 @@ fn resolve_existing_under_root(root: &Path, rel: Option<&str>) -> io::Result<Pat
         }
     };
     scratch::ensure_under_root(root, &target)
+}
+
+/// 相対パス引数を root 配下の lexical (非 canonical) パスへ解決する。
+/// `resolve_existing_under_root` と異なり symlink を辿らないので、`rm symlink` は unix 慣習どおり
+/// symlink 自体を消す (broken symlink も操作可能)。root 自身の指名 (`.` / `""`) は CHIRA_DIR 全消し防止で reject。
+fn resolve_lexical_under_root(root: &Path, rel: &str) -> io::Result<PathBuf> {
+    let path = Path::new(rel);
+    if path.is_absolute() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "absolute paths are not allowed",
+        ));
+    }
+    if rel.is_empty() || rel == "." || rel == "./" {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "cannot operate on the scratch root itself",
+        ));
+    }
+    let target = root.join(rel);
+    scratch::ensure_path_under_root(root, &target)?;
+    // root と一致するパス (subdir/.. 等で間接的に root を指したケース) も同様に拒否
+    let canonical_root = root.canonicalize()?;
+    let canonical_target = target.canonicalize().unwrap_or_else(|_| target.clone());
+    if canonical_target == canonical_root {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "cannot operate on the scratch root itself",
+        ));
+    }
+    Ok(target)
 }
 
 fn cli_error(lang: Lang, sub: &str, e: &dyn std::fmt::Display) -> i32 {
@@ -690,6 +723,96 @@ mod tests {
         // 失敗しないことだけ確認 (stdout の中身は手動検証)
         let code = cmd_find(Lang::En, &config, vec!["alp".into()]);
         assert_eq!(code, 0);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// 非対話 stdin での confirm スキップを契約として固定する (PR description の安全前提)
+    #[test]
+    fn cmd_rm_without_force_cancels_when_stdin_not_tty() {
+        let root = temp_root();
+        scratch::create_file(&root, "a.md").unwrap();
+        let config = Config {
+            dir: Some(root.to_string_lossy().into_owned()),
+            ..Default::default()
+        };
+        // cargo test の stdin は TTY ではない → confirm_delete が即座に false を返し exit 1
+        let code = cmd_rm(Lang::En, &config, vec!["a.md".into()]);
+        assert_eq!(code, 1);
+        assert!(
+            root.join("a.md").exists(),
+            "non-TTY 確認スキップで file を消してはならない"
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// `chira rm .` や `chira rm ""` で scratch root を消そうとしても reject する
+    #[test]
+    fn cmd_rm_rejects_scratch_root_targeting() {
+        let root = temp_root();
+        scratch::create_file(&root, "keep.md").unwrap();
+        let config = Config {
+            dir: Some(root.to_string_lossy().into_owned()),
+            ..Default::default()
+        };
+        // `.` で root を指名 → reject (CHIRA_DIR 全消し防止)
+        let code = cmd_rm(Lang::En, &config, vec![".".into(), "-rf".into()]);
+        assert_eq!(code, 1);
+        assert!(root.exists() && root.join("keep.md").exists());
+        // 空文字も同様に reject
+        let code = cmd_rm(Lang::En, &config, vec!["".into(), "-rf".into()]);
+        assert_eq!(code, 1);
+        assert!(root.exists() && root.join("keep.md").exists());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// `chira mv . newname` も同様に scratch root のリネームを reject する
+    #[test]
+    fn cmd_mv_rejects_scratch_root_targeting() {
+        let root = temp_root();
+        scratch::create_file(&root, "keep.md").unwrap();
+        let config = Config {
+            dir: Some(root.to_string_lossy().into_owned()),
+            ..Default::default()
+        };
+        let code = cmd_mv(Lang::En, &config, vec![".".into(), "renamed".into()]);
+        assert_eq!(code, 1);
+        assert!(root.exists() && root.join("keep.md").exists());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// rm が symlink 自体を削除する (target を辿らない、unix 慣習)
+    #[test]
+    fn cmd_rm_removes_symlink_not_target() {
+        let root = temp_root();
+        let target = scratch::create_file(&root, "target.md").unwrap();
+        std::fs::write(&target, "本文").unwrap();
+        std::os::unix::fs::symlink(&target, root.join("link")).unwrap();
+        let config = Config {
+            dir: Some(root.to_string_lossy().into_owned()),
+            ..Default::default()
+        };
+        let code = cmd_rm(Lang::En, &config, vec!["link".into(), "-f".into()]);
+        assert_eq!(code, 0);
+        assert!(!root.join("link").exists(), "symlink は消える");
+        assert!(target.exists(), "target は残る");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// broken symlink も listing と整合して操作可能 (`chira ls` で見えるなら `chira rm` できる)
+    #[test]
+    fn cmd_rm_removes_broken_symlink() {
+        let root = temp_root();
+        std::os::unix::fs::symlink("/nonexistent/target", root.join("broken")).unwrap();
+        let config = Config {
+            dir: Some(root.to_string_lossy().into_owned()),
+            ..Default::default()
+        };
+        let code = cmd_rm(Lang::En, &config, vec!["broken".into(), "-f".into()]);
+        assert_eq!(code, 0);
+        assert!(
+            root.join("broken").symlink_metadata().is_err(),
+            "broken symlink は消える"
+        );
         std::fs::remove_dir_all(&root).unwrap();
     }
 }

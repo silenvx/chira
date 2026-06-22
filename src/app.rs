@@ -736,11 +736,9 @@ impl App {
                     state.submode = ConfigSubmode::KeepList { selected: new_sel };
                 }
             }
-            KeyCode::Enter => {
-                if selected < state.keep.len() {
-                    self.input = state.keep[selected].clone();
-                    state.submode = ConfigSubmode::KeepEdit { index: selected };
-                }
+            KeyCode::Enter if selected < state.keep.len() => {
+                self.input = state.keep[selected].clone();
+                state.submode = ConfigSubmode::KeepEdit { index: selected };
             }
             _ => {}
         }

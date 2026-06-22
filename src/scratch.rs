@@ -151,6 +151,16 @@ fn build_tree(
         out.push_str(&format!("{prefix}{connector}{}{suffix}\n", entry.name));
         *lines += 1;
         if entry.is_dir && depth_left > 1 {
+            // symlink-to-dir には recurse しない (in-root symlink が外部 dir を指す場合、
+            // tree が CHIRA_DIR 外の内容を露出させる経路を塞ぐ。symlink 自身は前行で表示済み)
+            let is_symlink = entry
+                .path
+                .symlink_metadata()
+                .map(|m| m.file_type().is_symlink())
+                .unwrap_or(false);
+            if is_symlink {
+                continue;
+            }
             let child_prefix = format!("{prefix}{}", if is_last { "    " } else { "│   " });
             build_tree(
                 lang,
@@ -483,6 +493,32 @@ mod tests {
         assert!(t.contains("└── b.md"), "tree:\n{t}");
 
         fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn tree_does_not_recurse_into_symlinked_directory() {
+        let root = temp_root();
+        // 外部 dir に "secret" を置き、root から symlink で参照させる。
+        // tree が symlink を辿ると secret が出力に混入してしまう (security risk)
+        let outside = env::temp_dir().join(format!("chira-tree-outside-{}", std::process::id()));
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("secret.txt"), b"do-not-leak").unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("escape")).unwrap();
+        create_file(&root, "ok.md").unwrap();
+
+        let t = tree(crate::i18n::Lang::En, &root, 4, 100);
+        // symlink 自身 (`escape/`) は表示してよいが中身 (`secret.txt`) は出力に出てはならない
+        assert!(
+            t.contains("escape"),
+            "tree should still show the symlink entry:\n{t}"
+        );
+        assert!(t.contains("ok.md"), "regular entry should appear:\n{t}");
+        assert!(
+            !t.contains("secret.txt"),
+            "tree must not recurse into in-root symlinks:\n{t}"
+        );
+        fs::remove_dir_all(&root).unwrap();
+        fs::remove_dir_all(&outside).unwrap();
     }
 
     #[test]

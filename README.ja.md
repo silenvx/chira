@@ -127,7 +127,7 @@ vim と同じく `h`/`j`/`k`/`l` で移動（`h`=親、`l`=開く）でき、方
 | `chira path [<name>]` | — | エントリのフルパスを出力（省略時は `CHIRA_DIR`） |
 | `chira find <query> [<path>]` | `/` | 名前で絞り込み一覧（substring match、`ls` 同様の書式） |
 
-出力は機械可読寄り。`ls` / `find` は 1 行 1 名前で、色やディレクトリの末尾 `/` は stdout が TTY のときだけ付く。エラーは stderr、不在エントリは exit 1、引数誤りは exit 2 になる。破壊的操作（`rm` / `mv`）は対象パスが `CHIRA_DIR` 配下にあることを canonicalize して検証する（`..` や symlink 経由の root escape は拒否）。symlink に対する `rm` は unix の `rm` 同様 symlink 自体を消す（target は辿らない）。`rm` / `mv` は scratch root 自身（`.` / 空文字列）への操作を拒否する（`CHIRA_DIR` 全消し防止）。
+出力は機械可読寄り。`ls` / `find` は 1 行 1 名前で、色やディレクトリの末尾 `/` は stdout が TTY のときだけ付く。エラーは stderr、不在エントリは exit 1、引数誤りは exit 2 になる。破壊的操作（`rm` / `mv`）は対象パスが `CHIRA_DIR` 配下にあることを canonicalize して検証する（`..` や symlink 経由の root escape は拒否）。symlink に対する `rm` は unix の `rm` 同様 symlink 自体を消す（target は辿らない）。非対話（stdin が非 TTY）では `rm` は `-f` が必須で、未指定時は確認プロンプトが自動キャンセルされ exit 1 になる。`rm` / `mv` は scratch root 自身（`.` / 空文字列）への操作を拒否する（`CHIRA_DIR` 全消し防止）。
 
 `new` / `mkdir` は basename だけ受け取り、必ず `CHIRA_DIR` root 直下にエントリを作成する（名前に `/` を含むと拒否）。他のコマンド（`ls`, `tree`, `edit`, `shell`, `rm`, `mv`, `path`, `find`）は root 相対パスを受け付け、ネストしたエントリ（例: `chira edit ws/note.md`）を直接指定できる。subdir 内で新規作成したいときは `chira shell ws` でその場所のシェルに入ってから作業する。
 

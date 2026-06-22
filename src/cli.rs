@@ -528,9 +528,20 @@ fn resolve_lexical_under_root(root: &Path, rel: &str) -> io::Result<PathBuf> {
             "cannot operate on the scratch root itself",
         ));
     }
+    // 末尾コンポーネントが `..` / `.` だと parent が root 内に収まっても resolved target は root 外を指す
+    // (例: `subdir/../..` → resolved = root's parent)。fs::remove_dir_all がその path を walk して CHIRA_DIR
+    // 外を消す経路を塞ぐため、最終コンポーネントは通常の name に限定する
+    if let Some(file_name) = target_file_name(path)
+        && (file_name == ".." || file_name == ".")
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "path component '..' / '.' is not allowed in the last component",
+        ));
+    }
     let target = root.join(rel);
     scratch::ensure_path_under_root(root, &target)?;
-    // root と一致するパス (subdir/.. 等で間接的に root を指したケース) も同様に拒否
+    // 中間 `..` 等で間接的に root 自身を指したケースも拒否 (`subdir/..` 等)
     let canonical_root = root.canonicalize()?;
     let canonical_target = target.canonicalize().unwrap_or_else(|_| target.clone());
     if canonical_target == canonical_root {
@@ -540,6 +551,16 @@ fn resolve_lexical_under_root(root: &Path, rel: &str) -> io::Result<PathBuf> {
         ));
     }
     Ok(target)
+}
+
+/// path の最終 component (file_name) を文字列で返す。`..` / `.` の検査用。
+fn target_file_name(path: &Path) -> Option<&std::ffi::OsStr> {
+    path.components().next_back().and_then(|c| match c {
+        std::path::Component::Normal(s) => Some(s),
+        std::path::Component::ParentDir => Some(std::ffi::OsStr::new("..")),
+        std::path::Component::CurDir => Some(std::ffi::OsStr::new(".")),
+        _ => None,
+    })
 }
 
 fn cli_error(lang: Lang, sub: &str, e: &dyn std::fmt::Display) -> i32 {
@@ -763,6 +784,49 @@ mod tests {
         let code = cmd_rm(Lang::En, &config, vec!["".into(), "-rf".into()]);
         assert_eq!(code, 1);
         assert!(root.exists() && root.join("keep.md").exists());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// `subdir/../..` 等の末尾 `..` で CHIRA_DIR の外を指すパス traversal を reject する
+    /// (これを許すと fs::remove_dir_all が CHIRA_DIR の親 dir を削除しうる security bug)
+    #[test]
+    fn cmd_rm_rejects_parent_traversal_to_outside_root() {
+        let root = temp_root();
+        let subdir = scratch::create_dir(&root, "ws").unwrap();
+        scratch::create_file(&subdir, "inner.md").unwrap();
+        // root と並ぶ sibling dir を作って、攻撃が成功した場合に消える対象を用意する
+        let sibling = root.parent().unwrap().join(format!(
+            "chira-sibling-{}-{}",
+            std::process::id(),
+            "rm-traversal"
+        ));
+        std::fs::create_dir_all(&sibling).unwrap();
+        std::fs::write(sibling.join("important.txt"), b"keep").unwrap();
+        let config = Config {
+            dir: Some(root.to_string_lossy().into_owned()),
+            ..Default::default()
+        };
+        // ws/../.. は最終 component が `..` で root の外を指す → reject
+        let code = cmd_rm(Lang::En, &config, vec!["ws/../..".into(), "-rf".into()]);
+        assert_eq!(code, 1);
+        assert!(root.exists() && subdir.exists());
+        assert!(sibling.join("important.txt").exists(), "sibling は無事");
+        std::fs::remove_dir_all(&root).unwrap();
+        std::fs::remove_dir_all(&sibling).unwrap();
+    }
+
+    /// `subdir/..` のように間接的に root 自身を指すパスも root targeting として reject する
+    #[test]
+    fn cmd_rm_rejects_indirect_root_via_dotdot() {
+        let root = temp_root();
+        scratch::create_dir(&root, "ws").unwrap();
+        let config = Config {
+            dir: Some(root.to_string_lossy().into_owned()),
+            ..Default::default()
+        };
+        let code = cmd_rm(Lang::En, &config, vec!["ws/..".into(), "-rf".into()]);
+        assert_eq!(code, 1);
+        assert!(root.exists());
         std::fs::remove_dir_all(&root).unwrap();
     }
 

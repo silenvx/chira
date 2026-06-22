@@ -54,6 +54,27 @@ The location is resolved in this order: `$CHIRA_DIR` → `$XDG_DATA_HOME/chira` 
 CHIRA_DIR=~/scratch chira   # use a different location
 ```
 
+## Configuration
+
+For persistent settings without touching your shell startup files, chira reads a TOML config file. The path is resolved in this order: `$CHIRA_CONFIG` (a direct path) → `$XDG_CONFIG_HOME/chira/config.toml` → `~/.config/chira/config.toml`. A missing or empty file is treated as "unset" (no warning); a broken file prints a warning to stderr and starts with defaults.
+
+```toml
+# ~/.config/chira/config.toml
+dir = "~/scratch"      # storage location (leading ~ is expanded to $HOME)
+editor = "nvim"        # external editor (arguments allowed, e.g. "code --wait")
+shell = "/bin/zsh"     # shell opened with `s` (arguments allowed, e.g. "zsh -l")
+```
+
+Each value falls back independently when omitted. Resolution priority (high → low) is **environment variable → config file → built-in default**, so existing env-based usage keeps working:
+
+- `dir`: `$CHIRA_DIR` → `dir` → `$XDG_DATA_HOME/chira` → `~/.local/share/chira`
+- `editor`: `$EDITOR` → `editor` → `vi`
+- `shell`: `$SHELL` → `shell` → `/bin/sh`
+
+```sh
+CHIRA_DIR=/tmp/other chira   # env wins over config's dir
+```
+
 ## Language
 
 UI strings (help overlay, status messages, prompts) follow this resolution order:

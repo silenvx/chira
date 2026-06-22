@@ -94,6 +94,30 @@ pub fn err_unknown_arg(lang: Lang, arg: &str) -> String {
     }
 }
 
+pub fn warn_config_parse(
+    lang: Lang,
+    path: &dyn std::fmt::Display,
+    e: &dyn std::fmt::Display,
+) -> String {
+    match lang {
+        Lang::Ja => format!("設定ファイルの解析に失敗 ({path}): {e} — デフォルト設定で起動します"),
+        Lang::En => format!("Failed to parse config file ({path}): {e} — starting with defaults"),
+    }
+}
+
+pub fn warn_config_unreadable(
+    lang: Lang,
+    path: &dyn std::fmt::Display,
+    e: &dyn std::fmt::Display,
+) -> String {
+    match lang {
+        Lang::Ja => {
+            format!("設定ファイルの読み取りに失敗 ({path}): {e} — デフォルト設定で起動します")
+        }
+        Lang::En => format!("Failed to read config file ({path}): {e} — starting with defaults"),
+    }
+}
+
 pub fn err_external_launch(lang: Lang, e: &dyn std::fmt::Display) -> String {
     match lang {
         Lang::Ja => format!("外部プロセスの起動に失敗: {e}"),
@@ -101,17 +125,17 @@ pub fn err_external_launch(lang: Lang, e: &dyn std::fmt::Display) -> String {
     }
 }
 
-pub fn err_editor_parse(lang: Lang, e: &dyn std::fmt::Display) -> String {
+pub fn err_command_parse(lang: Lang, e: &dyn std::fmt::Display) -> String {
     match lang {
-        Lang::Ja => format!("$EDITOR の解析に失敗: {e}"),
-        Lang::En => format!("failed to parse $EDITOR: {e}"),
+        Lang::Ja => format!("コマンドの解析に失敗: {e}"),
+        Lang::En => format!("failed to parse command: {e}"),
     }
 }
 
-pub fn err_editor_empty(lang: Lang) -> &'static str {
+pub fn err_command_empty(lang: Lang) -> &'static str {
     match lang {
-        Lang::Ja => "$EDITOR が空です",
-        Lang::En => "$EDITOR is empty",
+        Lang::Ja => "コマンドが空です",
+        Lang::En => "command is empty",
     }
 }
 

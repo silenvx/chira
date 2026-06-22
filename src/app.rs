@@ -47,8 +47,8 @@ pub struct App {
 }
 
 impl App {
-    pub fn new() -> io::Result<Self> {
-        Ok(Self::with_root(scratch::root()?, i18n::lang()))
+    pub fn new(config_dir: Option<&str>) -> io::Result<Self> {
+        Ok(Self::with_root(scratch::root(config_dir)?, i18n::lang()))
     }
 
     pub fn with_root(root: PathBuf, lang: Lang) -> Self {

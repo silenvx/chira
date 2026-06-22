@@ -165,10 +165,24 @@ fn take_valid_template(
     lang: Lang,
     warnings: &mut Vec<String>,
 ) -> Option<String> {
+    use std::fmt::Write;
     let raw = get_str(table, key)?;
-    let rendered = Local::now().format(&raw).to_string();
+    // whitespace-only / 前後 padding はそのまま実行時 format に渡すと CLI と TUI 双方で
+    // 評価結果は同じだが意図せず先頭空白を含む name になりうる。採用時点で trim して正規化する
+    // (空文字は未設定扱い)
+    let normalized = raw.trim();
+    if normalized.is_empty() {
+        return None;
+    }
+    // chrono の invalid specifier (`%Q` 等) は Display::fmt が fmt::Error を返し、`to_string()`
+    // 経由だと内部の `expect` で panic する。`write!` 経由で fmt::Error を捕捉して warn + None に倒す
+    let mut rendered = String::new();
+    if write!(&mut rendered, "{}", Local::now().format(normalized)).is_err() {
+        warnings.push(i18n::warn_config_new_template(lang, key, normalized));
+        return None;
+    }
     if scratch::validate_name(&rendered).is_ok() {
-        Some(raw)
+        Some(normalized.to_string())
     } else {
         warnings.push(i18n::warn_config_new_template(lang, key, &rendered));
         None
@@ -858,6 +872,40 @@ mod tests {
         assert!(warnings.iter().any(|w| w.contains("dir_template")));
         assert_eq!(config.new.file_template(), DEFAULT_NEW_FILE_TEMPLATE);
         assert_eq!(config.new.dir_template(), DEFAULT_NEW_DIR_TEMPLATE);
+    }
+
+    /// 前後 padding は trim 正規化して採用、whitespace-only は silent skip (warn なし)
+    #[test]
+    fn parse_new_trims_padding_and_drops_whitespace_only() {
+        let (config, warnings) = parse(
+            r#"
+            [new]
+            name_template = "  memo-%Y.md  "
+            dir_template = "   "
+            "#,
+            Lang::En,
+        )
+        .unwrap();
+        assert_eq!(config.new.name_template.as_deref(), Some("memo-%Y.md"));
+        assert!(config.new.dir_template.is_none());
+        assert!(warnings.is_empty());
+    }
+
+    /// 未知 chrono specifier (`%Q` 等) は panic させず warn + default にフォールバック
+    #[test]
+    fn parse_new_invalid_chrono_specifier_warns_without_panic() {
+        let (config, warnings) = parse(
+            r#"
+            [new]
+            name_template = "memo-%Q.md"
+            "#,
+            Lang::En,
+        )
+        .unwrap();
+        assert!(config.new.name_template.is_none());
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("name_template"));
+        assert_eq!(config.new.file_template(), DEFAULT_NEW_FILE_TEMPLATE);
     }
 
     fn cfg(dir: Option<&str>, editor: Option<&str>) -> Config {

@@ -14,6 +14,10 @@ pub struct Config {
     pub shell: Option<String>,
     pub archive: ArchiveConfig,
     pub actions: Vec<Action>,
+    /// `N` (空ディレクトリ作成) を押したときに `t` 経由と同じ confirm + run フローに流すアクション名。
+    /// 未設定なら従来通り空ディレクトリ作成のみ (既存挙動を変えない opt-in)。
+    /// アクションが存在しない名前なら main 側 (app) で無視され従来の N 挙動になる。
+    pub default_action: Option<String>,
 }
 
 /// `[actions.<name>]` の 1 エントリ。`t` で選んで新ディレクトリ内で `run` を foreground 実行する。
@@ -98,6 +102,7 @@ fn parse(text: &str) -> Result<Config, toml::de::Error> {
         shell: get_str(&table, "shell"),
         archive: parse_archive(table.get("archive").and_then(|v| v.as_table())),
         actions: parse_actions(table.get("actions").and_then(|v| v.as_table())),
+        default_action: get_str(&table, "default_action"),
     })
 }
 
@@ -431,6 +436,31 @@ mod tests {
     fn parse_actions_missing_is_empty() {
         let config = parse("dir = \"/scratch\"").unwrap();
         assert!(config.actions.is_empty());
+    }
+
+    #[test]
+    fn parse_extracts_default_action() {
+        let config = parse(
+            r#"
+            default_action = "rust"
+
+            [actions.rust]
+            run = "cargo init -q"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(config.default_action.as_deref(), Some("rust"));
+        assert_eq!(config.actions.len(), 1);
+    }
+
+    #[test]
+    fn parse_default_action_missing_and_empty_are_none() {
+        // 未設定は None (既存挙動を変えない default-off の op-in)
+        assert_eq!(parse("dir = \"/scratch\"").unwrap().default_action, None);
+        // 空文字は未設定扱い
+        assert_eq!(parse("default_action = \"\"").unwrap().default_action, None);
+        // 型不一致 (数値・テーブル等) も None
+        assert_eq!(parse("default_action = 42").unwrap().default_action, None);
     }
 
     #[test]

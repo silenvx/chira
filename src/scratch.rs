@@ -11,7 +11,13 @@ pub struct Entry {
     pub name: String,
     pub is_dir: bool,
     pub modified: SystemTime,
+    /// `.chira/bootstrap-failed` sentinel が dir 直下にあるか (アクション実行失敗の可視マーカー)。
+    /// ファイルや failed が無い dir では常に false。
+    pub failed: bool,
 }
+
+/// 失敗時に dir 直下へ書く sentinel の相対パス (隠しディレクトリで read_entries の filter にかからない)。
+pub const BOOTSTRAP_FAILED_PATH: &str = ".chira/bootstrap-failed";
 
 /// scratch のルート: $CHIRA_DIR → config の dir → $XDG_DATA_HOME/chira → ~/.local/share/chira。
 /// env > config の順は、既存の `CHIRA_DIR=... chira` を config 導入後も優先させるため。
@@ -84,11 +90,14 @@ fn read_entries(dir: &Path) -> io::Result<Vec<Entry>> {
         let modified = meta
             .and_then(|m| m.modified())
             .unwrap_or(SystemTime::UNIX_EPOCH);
+        let path = dirent.path();
+        let failed = is_dir && path.join(BOOTSTRAP_FAILED_PATH).exists();
         entries.push(Entry {
-            path: dirent.path(),
+            path,
             name,
             is_dir,
             modified,
+            failed,
         });
     }
     Ok(entries)
@@ -288,12 +297,37 @@ pub fn entry_from_path(path: &Path) -> io::Result<Entry> {
         .unwrap_or_default();
     let meta = path.symlink_metadata()?;
     let modified = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+    let is_dir = meta.is_dir();
+    let failed = is_dir && path.join(BOOTSTRAP_FAILED_PATH).exists();
     Ok(Entry {
         path: path.to_path_buf(),
         name,
-        is_dir: meta.is_dir(),
+        is_dir,
         modified,
+        failed,
     })
+}
+
+/// `path` (新ディレクトリ) 配下にアクション失敗の sentinel を書く (best-effort)。
+/// 既存 `.chira/bootstrap-failed` を上書きする。
+pub fn write_bootstrap_failed(dir: &Path, action_name: &str, exit_code: i32) -> io::Result<()> {
+    let marker_dir = dir.join(".chira");
+    fs::create_dir_all(&marker_dir)?;
+    let body = format!("action = \"{action_name}\"\nexit_code = {exit_code}\n");
+    fs::write(marker_dir.join("bootstrap-failed"), body)
+}
+
+/// `path` (dir) 配下の bootstrap-failed sentinel を削除する (存在しなければ no-op)。
+/// 新規 dir 作成時にコピーや path traversal で既に sentinel が残っていた場合を
+/// アクション成功時にクリアする想定 (typical 経路は create_dir が既存 dir を reject
+/// するため新規 dir では sentinel 不在で no-op、defensive clear)。
+pub fn clear_bootstrap_failed(dir: &Path) -> io::Result<()> {
+    let sentinel = dir.join(BOOTSTRAP_FAILED_PATH);
+    match fs::remove_file(&sentinel) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
 }
 
 #[cfg(test)]
@@ -620,5 +654,51 @@ mod tests {
         assert!(ensure_path_under_root(&root, &outside.join("foo")).is_err());
         fs::remove_dir_all(&root).unwrap();
         fs::remove_dir_all(&outside).unwrap();
+    }
+
+    #[test]
+    fn bootstrap_failed_sentinel_roundtrip() {
+        let root = temp_root();
+        let ws = create_dir(&root, "ws").unwrap();
+        // 初期は failed=false
+        let entry = list(&root)
+            .unwrap()
+            .into_iter()
+            .find(|e| e.name == "ws")
+            .unwrap();
+        assert!(!entry.failed);
+
+        // 失敗 sentinel を書くと list が failed=true で拾う
+        write_bootstrap_failed(&ws, "demo-action", 42).unwrap();
+        assert!(ws.join(BOOTSTRAP_FAILED_PATH).exists());
+        let entry = list(&root)
+            .unwrap()
+            .into_iter()
+            .find(|e| e.name == "ws")
+            .unwrap();
+        assert!(entry.failed, "sentinel 書き込み後は Entry.failed=true");
+
+        // sentinel 内容に action 名と exit code が含まれる (簡易デバッグ用)
+        let body = std::fs::read_to_string(ws.join(BOOTSTRAP_FAILED_PATH)).unwrap();
+        assert!(body.contains("demo-action"));
+        assert!(body.contains("42"));
+
+        // 隠しディレクトリの sentinel は一覧自体には出てこない (`.chira` は read_entries の filter で除外)
+        assert!(!list(&ws).unwrap().iter().any(|e| e.name == ".chira"));
+
+        // clear で sentinel が消え failed=false に戻る (retry 用)
+        clear_bootstrap_failed(&ws).unwrap();
+        assert!(!ws.join(BOOTSTRAP_FAILED_PATH).exists());
+        let entry = list(&root)
+            .unwrap()
+            .into_iter()
+            .find(|e| e.name == "ws")
+            .unwrap();
+        assert!(!entry.failed);
+
+        // 不在からの clear は no-op (二重 clear で panic しない)
+        clear_bootstrap_failed(&ws).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
     }
 }

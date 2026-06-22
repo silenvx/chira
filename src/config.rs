@@ -111,9 +111,12 @@ fn parse_actions(table: Option<&toml::Table>) -> Vec<Action> {
         .iter()
         .filter_map(|(name, value)| {
             let tbl = value.as_table()?;
+            // trim 後で空判定する: `run = "   "` のような空白のみエントリは no-op で実害がないため除外。
+            // 採用時は trim 済み文字列にして `sh -c` への前後余分空白を落とす。
             let run = tbl
                 .get("run")
                 .and_then(|v| v.as_str())
+                .map(str::trim)
                 .filter(|s| !s.is_empty())?
                 .to_string();
             Some(Action {
@@ -381,6 +384,24 @@ mod tests {
             config.actions[1].description.as_deref(),
             Some("rust skeleton")
         );
+    }
+
+    #[test]
+    fn parse_actions_treats_whitespace_only_run_as_empty_and_trims() {
+        // run = "   " は no-op で実害がないため除外。採用時は trim 済み文字列で保存する。
+        let config = parse(
+            r#"
+            [actions.blank]
+            run = "   "
+
+            [actions.padded]
+            run = "  git init -q  "
+            "#,
+        )
+        .unwrap();
+        assert_eq!(config.actions.len(), 1);
+        assert_eq!(config.actions[0].name, "padded");
+        assert_eq!(config.actions[0].run, "git init -q");
     }
 
     #[test]

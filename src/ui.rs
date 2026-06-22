@@ -220,14 +220,17 @@ fn render_confirm_action(frame: &mut Frame, app: &App, area: Rect) {
     // 信頼ゲートはコマンド全文と操作行を必ず見せるのが要件。固定高だと長い dir 名で折返す
     // prompt 行や長い / 複数行 run でコマンド・操作行がクリップされるため、prompt と command
     // 両方の折返し行数からポップアップ高さを算出する。
-    let width = 72.min(area.width.saturating_sub(2)).max(20);
-    let inner_w = (width as usize).saturating_sub(2).max(1);
+    // wrap 計算には centered() が後段で行う実クランプ幅 (= 72 と area.width-2 の小さい方)
+    // をそのまま使う。max(20) の下駄を wrap に被せると狭い端末で行数を過小評価し操作行が
+    // クリップされる (debate-review round3 後の coderabbit / cubic 指摘)。
+    let popup_width = 72.min(area.width.saturating_sub(2));
+    let inner_w = (popup_width as usize).saturating_sub(2).max(1);
     let prompt_lines = wrap_rows(&i18n::confirm_action_prompt(app.lang, name), inner_w);
     let cmd_lines = wrap_rows(&command, inner_w);
     // 内側 = prompt N + command M + 空行 1 + 操作行 1、border 上下 2 を足し area に cap する
     let height = ((prompt_lines.len() + cmd_lines.len()) as u16 + 4).min(area.height);
 
-    let popup = centered(area, width, height);
+    let popup = centered(area, popup_width, height);
     frame.render_widget(Clear, popup);
 
     let mut text: Vec<Line> = prompt_lines.into_iter().map(Line::raw).collect();

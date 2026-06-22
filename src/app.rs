@@ -463,9 +463,14 @@ impl App {
     }
 
     fn begin_input(&mut self, kind: InputKind) {
+        // CLI と TUI placeholder を SSoT で揃えるため config.new helper 経由でテンプレを解決する
         self.input = match kind {
-            InputKind::NewFile => Local::now().format("scratch-%Y%m%d-%H%M%S.md").to_string(),
-            InputKind::NewDir => Local::now().format("scratch-%Y%m%d-%H%M%S").to_string(),
+            InputKind::NewFile => Local::now()
+                .format(self.config.new.file_template())
+                .to_string(),
+            InputKind::NewDir => Local::now()
+                .format(self.config.new.dir_template())
+                .to_string(),
             InputKind::Rename => self
                 .selected_entry()
                 .map(|e| e.name.clone())
@@ -939,6 +944,38 @@ mod tests {
         for c in s.chars() {
             app.on_key(key(c));
         }
+    }
+
+    /// `n` (NewFile) / `N` (NewDir) の placeholder は config.new のテンプレを chrono で評価した結果になる。
+    /// CLI (cmd_new / cmd_mkdir) と TUI の SSoT を担保するための contract test。
+    #[test]
+    fn begin_input_uses_configured_templates() {
+        use crate::config::NewConfig;
+        let root = temp_root();
+        let config = Config {
+            new: NewConfig {
+                name_template: Some("memo-%Y.txt".into()),
+                dir_template: Some("ws-%Y".into()),
+            },
+            ..Config::default()
+        };
+        let mut app = App::with_root(root.clone(), Lang::En, config);
+        app.on_key(key('n'));
+        assert!(matches!(app.mode, Mode::Input(InputKind::NewFile)));
+        assert!(
+            app.input.starts_with("memo-") && app.input.ends_with(".txt"),
+            "NewFile placeholder should use name_template: {}",
+            app.input
+        );
+        app.on_key(special(KeyCode::Esc));
+        app.on_key(key('N'));
+        assert!(matches!(app.mode, Mode::Input(InputKind::NewDir)));
+        assert!(
+            app.input.starts_with("ws-"),
+            "NewDir placeholder should use dir_template: {}",
+            app.input
+        );
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

@@ -3,10 +3,16 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use chrono::Local;
 use toml_edit::{Array, DocumentMut, value};
 
 use crate::i18n::{self, Lang};
-use crate::scratch::env_path;
+use crate::scratch::{self, env_path};
+
+/// `chira new` の name 省略時に使う chrono strftime テンプレ。CLI と TUI placeholder の SSoT。
+pub const DEFAULT_NEW_FILE_TEMPLATE: &str = "scratch-%Y%m%d-%H%M%S.md";
+/// `chira mkdir` の name 省略時に使う chrono strftime テンプレ。CLI と TUI placeholder の SSoT。
+pub const DEFAULT_NEW_DIR_TEMPLATE: &str = "scratch-%Y%m%d-%H%M%S";
 
 /// config.toml から読んだ値。未指定 (キー不在・空文字・型不一致) は None で、
 /// 呼び出し側が env → ハードコード default へフォールバックする。
@@ -21,6 +27,29 @@ pub struct Config {
     /// 未設定なら従来通り空ディレクトリ作成のみ (既存挙動を変えない opt-in)。
     /// アクションが存在しない名前なら main 側 (app) で無視され従来の N 挙動になる。
     pub default_action: Option<String>,
+    pub new: NewConfig,
+}
+
+/// `[new]` セクション。`chira new` / `chira mkdir` の name 省略時の自動命名 chrono strftime テンプレ。
+/// `None` ならハードコード default (`DEFAULT_NEW_FILE_TEMPLATE` / `DEFAULT_NEW_DIR_TEMPLATE`) を使う。
+#[derive(Default, Debug, Clone, PartialEq, Eq)]
+pub struct NewConfig {
+    pub name_template: Option<String>,
+    pub dir_template: Option<String>,
+}
+
+impl NewConfig {
+    pub fn file_template(&self) -> &str {
+        self.name_template
+            .as_deref()
+            .unwrap_or(DEFAULT_NEW_FILE_TEMPLATE)
+    }
+
+    pub fn dir_template(&self) -> &str {
+        self.dir_template
+            .as_deref()
+            .unwrap_or(DEFAULT_NEW_DIR_TEMPLATE)
+    }
 }
 
 /// `[actions.<name>]` の 1 エントリ。`t` で選んで新ディレクトリ内で `run` を foreground 実行する。
@@ -56,28 +85,27 @@ pub fn load(lang: Lang) -> Config {
 
 /// 解決済みパスから読み込み・パースし、出る warning を stderr へ流す。
 fn load_from_path(path: &Path, lang: Lang) -> Config {
-    let (config, warning) = read_and_parse(path, lang);
-    if let Some(warning) = warning {
+    let (config, warnings) = read_and_parse(path, lang);
+    for warning in warnings {
         eprintln!("{warning}");
     }
     config
 }
 
-/// 読み込み・パースの結果と warning を返す (stderr 副作用を分離して warning 契約をテスト可能にする)。
-/// 不在は silent (None)、パース失敗・読み取り失敗は warning 文言を Some で返す。
-fn read_and_parse(path: &Path, lang: Lang) -> (Config, Option<String>) {
+/// 読み込み・パースの結果と warning 集合を返す (stderr 副作用を分離して warning 契約をテスト可能にする)。
+/// 不在は silent (空 Vec)、パース失敗・読み取り失敗・template validate 失敗は warning 文言を Vec で返す。
+fn read_and_parse(path: &Path, lang: Lang) -> (Config, Vec<String>) {
     match fs::read_to_string(path) {
-        Ok(text) => match parse(&text) {
-            Ok(config) => (config, None),
-            Err(e) => (
+        Ok(text) => parse(&text, lang).unwrap_or_else(|e| {
+            (
                 Config::default(),
-                Some(i18n::warn_config_parse(lang, &path.display(), &e)),
-            ),
-        },
-        Err(e) if e.kind() == io::ErrorKind::NotFound => (Config::default(), None),
+                vec![i18n::warn_config_parse(lang, &path.display(), &e)],
+            )
+        }),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => (Config::default(), Vec::new()),
         Err(e) => (
             Config::default(),
-            Some(i18n::warn_config_unreadable(lang, &path.display(), &e)),
+            vec![i18n::warn_config_unreadable(lang, &path.display(), &e)],
         ),
     }
 }
@@ -97,16 +125,54 @@ fn resolve_path(
     Some(home?.join(".config/chira/config.toml"))
 }
 
-fn parse(text: &str) -> Result<Config, toml::de::Error> {
+fn parse(text: &str, lang: Lang) -> Result<(Config, Vec<String>), toml::de::Error> {
     let table: toml::Table = toml::from_str(text)?;
-    Ok(Config {
-        dir: get_str(&table, "dir"),
-        editor: get_str(&table, "editor"),
-        shell: get_str(&table, "shell"),
-        archive: parse_archive(table.get("archive").and_then(|v| v.as_table())),
-        actions: parse_actions(table.get("actions").and_then(|v| v.as_table())),
-        default_action: get_str(&table, "default_action"),
-    })
+    let mut warnings = Vec::new();
+    let new = parse_new(
+        table.get("new").and_then(|v| v.as_table()),
+        lang,
+        &mut warnings,
+    );
+    Ok((
+        Config {
+            dir: get_str(&table, "dir"),
+            editor: get_str(&table, "editor"),
+            shell: get_str(&table, "shell"),
+            archive: parse_archive(table.get("archive").and_then(|v| v.as_table())),
+            actions: parse_actions(table.get("actions").and_then(|v| v.as_table())),
+            default_action: get_str(&table, "default_action"),
+            new,
+        },
+        warnings,
+    ))
+}
+
+/// 名前有効性 (空・`/` 含み・先頭 `.`) は時刻非依存なので parse 時の 1 回評価で実行時の挙動を代表できる。
+/// validate 失敗時は warn + default にフォールバック。
+fn parse_new(table: Option<&toml::Table>, lang: Lang, warnings: &mut Vec<String>) -> NewConfig {
+    let Some(t) = table else {
+        return NewConfig::default();
+    };
+    NewConfig {
+        name_template: take_valid_template(t, "name_template", lang, warnings),
+        dir_template: take_valid_template(t, "dir_template", lang, warnings),
+    }
+}
+
+fn take_valid_template(
+    table: &toml::Table,
+    key: &str,
+    lang: Lang,
+    warnings: &mut Vec<String>,
+) -> Option<String> {
+    let raw = get_str(table, key)?;
+    let rendered = Local::now().format(&raw).to_string();
+    if scratch::validate_name(&rendered).is_ok() {
+        Some(raw)
+    } else {
+        warnings.push(i18n::warn_config_new_template(lang, key, &rendered));
+        None
+    }
 }
 
 /// `[actions.*]` をパースする。`run` が非空文字列のエントリのみ採用し、名前順にソートする。
@@ -446,6 +512,11 @@ mod tests {
         dir
     }
 
+    /// テストでは warning を捨てて Config だけ取り出す薄い helper (lang は En 固定)。
+    fn parse_ok(text: &str) -> Config {
+        parse(text, Lang::En).unwrap().0
+    }
+
     #[test]
     fn resolve_path_precedence() {
         // CHIRA_CONFIG は絶対パスをそのまま使う
@@ -478,10 +549,10 @@ mod tests {
     #[test]
     fn read_and_parse_missing_is_silent_default() {
         let dir = temp_dir();
-        // 不在ファイルは warning なし (None) で default
-        let (config, warning) = read_and_parse(&dir.join("absent.toml"), Lang::En);
+        // 不在ファイルは warning なし (空 Vec) で default
+        let (config, warnings) = read_and_parse(&dir.join("absent.toml"), Lang::En);
         assert_eq!(config, Config::default());
-        assert_eq!(warning, None);
+        assert!(warnings.is_empty());
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -490,11 +561,11 @@ mod tests {
         let dir = temp_dir();
         let path = dir.join("config.toml");
         fs::write(&path, "dir = \"/scratch\"\neditor = \"nvim\"\n").unwrap();
-        let (config, warning) = read_and_parse(&path, Lang::En);
+        let (config, warnings) = read_and_parse(&path, Lang::En);
         assert_eq!(config.dir.as_deref(), Some("/scratch"));
         assert_eq!(config.editor.as_deref(), Some("nvim"));
         assert_eq!(config.shell, None);
-        assert_eq!(warning, None);
+        assert!(warnings.is_empty());
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -504,9 +575,9 @@ mod tests {
         let path = dir.join("config.toml");
         // 壊れた TOML は warning を出して default で起動継続 (README 契約)
         fs::write(&path, "dir = ").unwrap();
-        let (config, warning) = read_and_parse(&path, Lang::En);
+        let (config, warnings) = read_and_parse(&path, Lang::En);
         assert_eq!(config, Config::default());
-        assert!(warning.is_some_and(|w| w.contains("parse")));
+        assert!(warnings.iter().any(|w| w.contains("parse")));
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -517,11 +588,11 @@ mod tests {
         let path = dir.join("config.toml");
         fs::write(&path, "dir = \"/scratch\"").unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
-        let (config, warning) = read_and_parse(&path, Lang::En);
+        let (config, warnings) = read_and_parse(&path, Lang::En);
         // root は権限を無視して読めるため、読めた (warning なし) 場合のみ assert を skip する
-        if let Some(warning) = warning {
+        if !warnings.is_empty() {
             assert_eq!(config, Config::default());
-            assert!(warning.contains("read"));
+            assert!(warnings.iter().any(|w| w.contains("read")));
         }
         fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
         fs::remove_dir_all(&dir).unwrap();
@@ -529,14 +600,13 @@ mod tests {
 
     #[test]
     fn parse_extracts_known_string_keys() {
-        let config = parse(
+        let config = parse_ok(
             r#"
             dir = "~/scratch"
             editor = "nvim --clean"
             shell = "/bin/zsh"
             "#,
-        )
-        .unwrap();
+        );
         assert_eq!(
             config,
             Config {
@@ -550,18 +620,15 @@ mod tests {
 
     #[test]
     fn parse_empty_is_all_none() {
-        assert_eq!(parse("").unwrap(), Config::default());
+        assert_eq!(parse_ok(""), Config::default());
         // 未知キーや空文字値も未設定扱い
-        assert_eq!(
-            parse("foo = \"bar\"\ndir = \"\"").unwrap(),
-            Config::default()
-        );
+        assert_eq!(parse_ok("foo = \"bar\"\ndir = \"\""), Config::default());
     }
 
     #[test]
     fn parse_ignores_non_string_values() {
         // 型不一致 (数値・テーブル等) は採用せず None にする
-        let config = parse("dir = 42\neditor = \"vi\"\n[shell]\nx = 1").unwrap();
+        let config = parse_ok("dir = 42\neditor = \"vi\"\n[shell]\nx = 1");
         assert_eq!(
             config,
             Config {
@@ -575,7 +642,7 @@ mod tests {
 
     #[test]
     fn parse_extracts_archive_section() {
-        let config = parse(
+        let config = parse_ok(
             r#"
             [archive]
             ttl_days = 30
@@ -583,8 +650,7 @@ mod tests {
             on_startup = true
             keep = ["pinned-*", "longterm/"]
             "#,
-        )
-        .unwrap();
+        );
         assert_eq!(config.archive.ttl_days, Some(30));
         assert_eq!(config.archive.dir.as_deref(), Some("~/scratch-archive"));
         assert!(config.archive.on_startup);
@@ -596,7 +662,7 @@ mod tests {
 
     #[test]
     fn parse_archive_missing_is_default_off() {
-        let config = parse("dir = \"/scratch\"").unwrap();
+        let config = parse_ok("dir = \"/scratch\"");
         assert_eq!(config.archive, ArchiveConfig::default());
         assert!(!config.archive.on_startup);
         assert_eq!(config.archive.ttl_days, None);
@@ -606,13 +672,12 @@ mod tests {
     #[test]
     fn parse_archive_ignores_non_string_keep_entries() {
         // 型不一致・空文字は keep から弾く (一覧全体ではなく要素単位で除外)
-        let config = parse(
+        let config = parse_ok(
             r#"
             [archive]
             keep = ["ok-*", 42, "", "longterm/"]
             "#,
-        )
-        .unwrap();
+        );
         assert_eq!(
             config.archive.keep,
             vec!["ok-*".to_string(), "longterm/".to_string()]
@@ -622,13 +687,13 @@ mod tests {
     #[test]
     fn parse_archive_rejects_negative_ttl() {
         // u64 へ収まらない値 (負値) は未設定扱い (誤って off 化を防ぐため None で返す)
-        let config = parse("[archive]\nttl_days = -1").unwrap();
+        let config = parse_ok("[archive]\nttl_days = -1");
         assert_eq!(config.archive.ttl_days, None);
     }
 
     #[test]
     fn parse_extracts_actions_sorted_by_name() {
-        let config = parse(
+        let config = parse_ok(
             r#"
             [actions.rust]
             description = "rust skeleton"
@@ -637,8 +702,7 @@ mod tests {
             [actions.clone]
             run = "git clone --depth 1 git@example.com:me/sandbox.git ."
             "#,
-        )
-        .unwrap();
+        );
         // 名前順 (clone < rust) でソートされる
         assert_eq!(config.actions.len(), 2);
         assert_eq!(config.actions[0].name, "clone");
@@ -654,7 +718,7 @@ mod tests {
     #[test]
     fn parse_actions_treats_whitespace_only_run_as_empty_and_trims() {
         // run = "   " は no-op で実害がないため除外。採用時は trim 済み文字列で保存する。
-        let config = parse(
+        let config = parse_ok(
             r#"
             [actions.blank]
             run = "   "
@@ -662,8 +726,7 @@ mod tests {
             [actions.padded]
             run = "  git init -q  "
             "#,
-        )
-        .unwrap();
+        );
         assert_eq!(config.actions.len(), 1);
         assert_eq!(config.actions[0].name, "padded");
         assert_eq!(config.actions[0].run, "git init -q");
@@ -672,7 +735,7 @@ mod tests {
     #[test]
     fn parse_actions_skips_entries_without_run() {
         // run 欠落・空・非文字列は無効として除外する
-        let config = parse(
+        let config = parse_ok(
             r#"
             [actions.ok]
             run = "git init -q"
@@ -686,29 +749,27 @@ mod tests {
             [actions.bad_type]
             run = 42
             "#,
-        )
-        .unwrap();
+        );
         assert_eq!(config.actions.len(), 1);
         assert_eq!(config.actions[0].name, "ok");
     }
 
     #[test]
     fn parse_actions_missing_is_empty() {
-        let config = parse("dir = \"/scratch\"").unwrap();
+        let config = parse_ok("dir = \"/scratch\"");
         assert!(config.actions.is_empty());
     }
 
     #[test]
     fn parse_extracts_default_action() {
-        let config = parse(
+        let config = parse_ok(
             r#"
             default_action = "rust"
 
             [actions.rust]
             run = "cargo init -q"
             "#,
-        )
-        .unwrap();
+        );
         assert_eq!(config.default_action.as_deref(), Some("rust"));
         assert_eq!(config.actions.len(), 1);
     }
@@ -716,18 +777,87 @@ mod tests {
     #[test]
     fn parse_default_action_missing_and_empty_are_none() {
         // 未設定は None (既存挙動を変えない default-off の op-in)
-        assert_eq!(parse("dir = \"/scratch\"").unwrap().default_action, None);
+        assert_eq!(parse_ok("dir = \"/scratch\"").default_action, None);
         // 空文字は未設定扱い
-        assert_eq!(parse("default_action = \"\"").unwrap().default_action, None);
+        assert_eq!(parse_ok("default_action = \"\"").default_action, None);
         // 型不一致 (数値・テーブル等) も None
-        assert_eq!(parse("default_action = 42").unwrap().default_action, None);
+        assert_eq!(parse_ok("default_action = 42").default_action, None);
     }
 
     #[test]
     fn parse_broken_toml_is_err() {
         // 壊れた TOML は Err (load 側で warning + default にフォールバックする)
-        assert!(parse("dir = ").is_err());
-        assert!(parse("[unterminated").is_err());
+        assert!(parse("dir = ", Lang::En).is_err());
+        assert!(parse("[unterminated", Lang::En).is_err());
+    }
+
+    #[test]
+    fn parse_extracts_new_templates() {
+        let config = parse_ok(
+            r#"
+            [new]
+            name_template = "memo-%Y-%m-%d_%H%M%S.md"
+            dir_template = "memo-%Y-%m-%d_%H%M%S"
+            "#,
+        );
+        assert_eq!(
+            config.new.name_template.as_deref(),
+            Some("memo-%Y-%m-%d_%H%M%S.md")
+        );
+        assert_eq!(
+            config.new.dir_template.as_deref(),
+            Some("memo-%Y-%m-%d_%H%M%S")
+        );
+        assert_eq!(config.new.file_template(), "memo-%Y-%m-%d_%H%M%S.md");
+        assert_eq!(config.new.dir_template(), "memo-%Y-%m-%d_%H%M%S");
+    }
+
+    #[test]
+    fn parse_new_missing_uses_builtin_defaults() {
+        // [new] 不在は config-side None。file_template / dir_template が default を返す。
+        let config = parse_ok("dir = \"/scratch\"");
+        assert!(config.new.name_template.is_none());
+        assert!(config.new.dir_template.is_none());
+        assert_eq!(config.new.file_template(), DEFAULT_NEW_FILE_TEMPLATE);
+        assert_eq!(config.new.dir_template(), DEFAULT_NEW_DIR_TEMPLATE);
+    }
+
+    #[test]
+    fn parse_new_empty_and_wrong_type_is_none() {
+        // 空文字・型不一致は None (get_str 経由) で warning なし
+        let (config, warnings) = parse(
+            r#"
+            [new]
+            name_template = ""
+            dir_template = 42
+            "#,
+            Lang::En,
+        )
+        .unwrap();
+        assert!(config.new.name_template.is_none());
+        assert!(config.new.dir_template.is_none());
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn parse_new_invalid_template_warns_and_falls_back() {
+        // テンプレ評価結果が validate_name を通らない (`/` 含み・先頭 `.`) なら warn + None
+        let (config, warnings) = parse(
+            r#"
+            [new]
+            name_template = "memo/%Y.md"
+            dir_template = ".memo-%Y%m%d"
+            "#,
+            Lang::En,
+        )
+        .unwrap();
+        assert!(config.new.name_template.is_none());
+        assert!(config.new.dir_template.is_none());
+        assert_eq!(warnings.len(), 2);
+        assert!(warnings.iter().any(|w| w.contains("name_template")));
+        assert!(warnings.iter().any(|w| w.contains("dir_template")));
+        assert_eq!(config.new.file_template(), DEFAULT_NEW_FILE_TEMPLATE);
+        assert_eq!(config.new.dir_template(), DEFAULT_NEW_DIR_TEMPLATE);
     }
 
     fn cfg(dir: Option<&str>, editor: Option<&str>) -> Config {
@@ -790,7 +920,7 @@ mod tests {
             ..Default::default()
         };
         let out = apply_edit("", &edit).unwrap();
-        let parsed = parse(&out).unwrap();
+        let parsed = parse_ok(&out);
         assert_eq!(parsed.dir.as_deref(), Some("~/scratch"));
         assert_eq!(parsed.editor.as_deref(), Some("nvim"));
         assert_eq!(parsed.archive.ttl_days, Some(30));
@@ -844,7 +974,7 @@ unrelated_key = \"keep me\"
             ..Default::default()
         };
         let out = apply_edit("dir = \"/scratch\"\n", &edit).unwrap();
-        let parsed = parse(&out).unwrap();
+        let parsed = parse_ok(&out);
         assert_eq!(parsed.archive.ttl_days, Some(14));
         assert_eq!(parsed.dir.as_deref(), Some("/scratch"));
     }
@@ -858,7 +988,7 @@ unrelated_key = \"keep me\"
             ..Default::default()
         };
         let out = apply_edit(original, &edit).unwrap();
-        let parsed = parse(&out).unwrap();
+        let parsed = parse_ok(&out);
         assert_eq!(parsed.archive.keep, vec!["new-*", "longterm/"]);
         assert!(!parsed.archive.keep.iter().any(|s| s == "old-*"));
     }
@@ -900,7 +1030,7 @@ unrelated_key = \"keep me\"
             ..Default::default()
         };
         let out = apply_edit(original, &edit).unwrap();
-        let parsed = parse(&out).unwrap();
+        let parsed = parse_ok(&out);
         assert_eq!(parsed.archive.ttl_days, Some(30));
         // 元の値は coerce 時に保持
         assert_eq!(parsed.archive.dir.as_deref(), Some("~/old"));
@@ -940,7 +1070,7 @@ unrelated_key = \"keep me\"
             ..Default::default()
         };
         save(&path, &edit).unwrap();
-        let loaded = parse(&fs::read_to_string(&path).unwrap()).unwrap();
+        let loaded = parse_ok(&fs::read_to_string(&path).unwrap());
         assert_eq!(loaded.dir.as_deref(), Some("/scratch"));
         assert_eq!(loaded.archive.ttl_days, Some(30));
         assert_eq!(loaded.archive.keep, vec!["pinned-*"]);

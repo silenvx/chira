@@ -259,6 +259,19 @@ pub fn warn_config_unreadable(
     }
 }
 
+/// `[new]` の template 評価結果が validate_name を通らないときの警告 (key は `name_template`/`dir_template`)。
+/// 評価結果の値 (展開後の name) も含めて、テンプレ記述ミスを利用者が直しやすくする。
+pub fn warn_config_new_template(lang: Lang, key: &str, rendered: &str) -> String {
+    match lang {
+        Lang::Ja => format!(
+            "[new] {key} の評価結果 `{rendered}` が name として無効 (空・`/` 含み・先頭 `.`) — 既定値にフォールバックします"
+        ),
+        Lang::En => format!(
+            "[new] {key} renders to `{rendered}` which is not a valid name (empty, contains `/`, or starts with `.`) — falling back to the built-in default"
+        ),
+    }
+}
+
 pub fn err_external_launch(lang: Lang, e: &dyn std::fmt::Display) -> String {
     match lang {
         Lang::Ja => format!("外部プロセスの起動に失敗: {e}"),

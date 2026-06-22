@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use chrono::Local;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
-use crate::config::Action;
+use crate::config::{self, Action, Config, ConfigEdit, Effective};
 use crate::i18n::{self, Lang};
 use crate::scratch::{self, Entry};
 
@@ -13,6 +13,52 @@ pub enum InputKind {
     NewFile,
     NewDir,
     Rename,
+}
+
+/// Config 画面で各行が指す設定項目。順序は描画順と一致させる。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ConfigItem {
+    Dir,
+    Editor,
+    Shell,
+    ArchiveTtlDays,
+    ArchiveDir,
+    ArchiveOnStartup,
+    ArchiveKeep,
+}
+
+impl ConfigItem {
+    pub const ALL: &'static [ConfigItem] = &[
+        ConfigItem::Dir,
+        ConfigItem::Editor,
+        ConfigItem::Shell,
+        ConfigItem::ArchiveTtlDays,
+        ConfigItem::ArchiveDir,
+        ConfigItem::ArchiveOnStartup,
+        ConfigItem::ArchiveKeep,
+    ];
+}
+
+#[derive(PartialEq, Eq, Debug)]
+pub enum ConfigSubmode {
+    Browse,
+    Edit,
+    /// keep リストの編集 (a で追加・d で削除・Enter で 1 entry 編集)
+    KeepList {
+        selected: usize,
+    },
+    KeepEdit {
+        index: usize,
+    },
+}
+
+pub struct ConfigState {
+    pub effective: Effective,
+    pub edit: ConfigEdit,
+    pub keep: Vec<String>,
+    pub selected: usize,
+    pub submode: ConfigSubmode,
+    pub save_path: Option<PathBuf>,
 }
 
 #[derive(PartialEq, Eq, Debug)]
@@ -26,6 +72,7 @@ pub enum Mode {
     /// 選択アクションの `run` を実行する前の確認 (信頼ゲート: コマンド全文を表示)
     ConfirmAction,
     Help,
+    Config,
 }
 
 /// TUI を一旦抜けて外部プロセスを動かす要求 (main のループが処理する)
@@ -57,6 +104,8 @@ pub struct App {
     pub pending: Option<Pending>,
     pub should_quit: bool,
     pub lang: Lang,
+    pub config: Config,
+    pub config_state: Option<ConfigState>,
     /// config.toml の `[actions.*]` (名前順)。`t` ピッカーで選ぶ。
     pub actions: Vec<Action>,
     /// config.toml の `default_action`。`N` (NewDir) を押した時に actions に該当があれば
@@ -71,11 +120,12 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(config_dir: Option<&str>) -> io::Result<Self> {
-        Ok(Self::with_root(scratch::root(config_dir)?, i18n::lang()))
+    pub fn new(config: Config) -> io::Result<Self> {
+        let root = scratch::root(config.dir.as_deref())?;
+        Ok(Self::with_root(root, i18n::lang(), config))
     }
 
-    pub fn with_root(root: PathBuf, lang: Lang) -> Self {
+    pub fn with_root(root: PathBuf, lang: Lang, config: Config) -> Self {
         let mut app = Self {
             cwd: root.clone(),
             root,
@@ -89,11 +139,13 @@ impl App {
             pending: None,
             should_quit: false,
             lang,
-            actions: Vec::new(),
-            default_action: None,
+            actions: config.actions.clone(),
+            default_action: config.default_action.clone(),
             action_cursor: 0,
             selected_action: None,
             pending_name: String::new(),
+            config,
+            config_state: None,
         };
         app.refresh();
         app
@@ -163,6 +215,7 @@ impl App {
             Mode::ConfirmAction => self.on_key_confirm_action(key),
             // ヘルプは何かキーを押せば閉じる
             Mode::Help => self.mode = Mode::Browse,
+            Mode::Config => self.on_key_config(key),
         }
     }
 
@@ -233,6 +286,7 @@ impl App {
                 self.status.clear();
             }
             KeyCode::Char('?') => self.mode = Mode::Help,
+            KeyCode::Char(',') => self.enter_config(),
             KeyCode::Esc if !self.search.is_empty() => {
                 self.search.clear();
                 self.selected = 0;
@@ -484,6 +538,365 @@ impl App {
             self.update_preview();
         }
     }
+
+    fn enter_config(&mut self) {
+        let mut effective = config::effective(&self.config);
+        // dir が default (env / config 未設定) の場合、effective.dir.0 は空文字のため
+        // ユーザーには実際の保存先 ($XDG_DATA_HOME/chira → ~/.local/share/chira) が見えない。
+        // scratch::root で解決済みの self.root を表示用に差し込む (source は Default のまま)
+        if matches!(effective.dir.1, config::Source::Default) {
+            effective.dir.0 = self.root.display().to_string();
+        }
+        let keep = effective.archive_keep.0.clone();
+        self.config_state = Some(ConfigState {
+            effective,
+            edit: ConfigEdit::default(),
+            keep,
+            selected: 0,
+            submode: ConfigSubmode::Browse,
+            save_path: config::save_path(),
+        });
+        self.mode = Mode::Config;
+        self.input.clear();
+        self.status.clear();
+    }
+
+    fn exit_config(&mut self) {
+        self.config_state = None;
+        self.mode = Mode::Browse;
+        self.input.clear();
+    }
+
+    fn on_key_config(&mut self, key: KeyEvent) {
+        // submode を取り出して個別 handler に dispatch。state 変更は handler 内で行う
+        let Some(submode) = self
+            .config_state
+            .as_ref()
+            .map(|s| std::mem::discriminant(&s.submode))
+        else {
+            self.exit_config();
+            return;
+        };
+        if submode == std::mem::discriminant(&ConfigSubmode::Browse) {
+            self.on_key_config_browse(key);
+        } else if submode == std::mem::discriminant(&ConfigSubmode::Edit) {
+            self.on_key_config_edit(key);
+        } else if submode == std::mem::discriminant(&ConfigSubmode::KeepList { selected: 0 }) {
+            self.on_key_config_keep_list(key);
+        } else {
+            self.on_key_config_keep_edit(key);
+        }
+    }
+
+    fn on_key_config_browse(&mut self, key: KeyEvent) {
+        let Some(state) = self.config_state.as_mut() else {
+            return;
+        };
+        let len = ConfigItem::ALL.len();
+        match key.code {
+            KeyCode::Esc => self.exit_config(),
+            KeyCode::Down | KeyCode::Char('j') => {
+                state.selected = (state.selected + 1).min(len - 1);
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                state.selected = state.selected.saturating_sub(1);
+            }
+            KeyCode::Char('g') | KeyCode::Home => state.selected = 0,
+            KeyCode::Char('G') | KeyCode::End => state.selected = len - 1,
+            KeyCode::Char(' ') => self.toggle_or_begin_edit_selected(),
+            KeyCode::Enter => self.begin_config_edit_selected(),
+            KeyCode::Char('s') => self.save_config(),
+            _ => {}
+        }
+    }
+
+    fn toggle_or_begin_edit_selected(&mut self) {
+        let Some(state) = self.config_state.as_mut() else {
+            return;
+        };
+        // Space は bool のみ toggle、他型は Enter と同じ「編集モード入り」
+        match ConfigItem::ALL[state.selected] {
+            ConfigItem::ArchiveOnStartup => {
+                let cur = state
+                    .edit
+                    .archive_on_startup
+                    .unwrap_or(state.effective.archive_on_startup.0);
+                state.edit.archive_on_startup = Some(!cur);
+            }
+            _ => self.begin_config_edit_selected(),
+        }
+    }
+
+    fn begin_config_edit_selected(&mut self) {
+        let Some(state) = self.config_state.as_mut() else {
+            return;
+        };
+        let item = ConfigItem::ALL[state.selected];
+        match item {
+            ConfigItem::ArchiveOnStartup => {
+                let cur = state
+                    .edit
+                    .archive_on_startup
+                    .unwrap_or(state.effective.archive_on_startup.0);
+                state.edit.archive_on_startup = Some(!cur);
+            }
+            ConfigItem::ArchiveKeep => {
+                state.submode = ConfigSubmode::KeepList { selected: 0 };
+            }
+            _ => {
+                self.input = current_value_string(state, item);
+                state.submode = ConfigSubmode::Edit;
+            }
+        }
+    }
+
+    fn on_key_config_edit(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => {
+                self.input.clear();
+                if let Some(state) = self.config_state.as_mut() {
+                    state.submode = ConfigSubmode::Browse;
+                }
+            }
+            KeyCode::Enter => self.commit_config_edit(),
+            KeyCode::Backspace => {
+                self.input.pop();
+            }
+            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.input.push(c);
+            }
+            _ => {}
+        }
+    }
+
+    fn commit_config_edit(&mut self) {
+        let Some(state) = self.config_state.as_mut() else {
+            return;
+        };
+        let item = ConfigItem::ALL[state.selected];
+        let raw = self.input.clone();
+        let trimmed = raw.trim();
+        // env override 中の string 項目で初期値「空文字」のまま Enter を押すと、
+        // current_value_string が env 値を出さない設計の副作用で Some("") = 削除になり、
+        // 元の config 値を silent 削除しうる。明示的に何も入力せず確定した場合は no-op。
+        if trimmed.is_empty() && is_env_backed_string_initial_edit(state, item) {
+            self.input.clear();
+            state.submode = ConfigSubmode::Browse;
+            return;
+        }
+        match item {
+            ConfigItem::Dir => {
+                state.edit.dir = Some(trimmed.to_string());
+            }
+            ConfigItem::Editor => {
+                state.edit.editor = Some(trimmed.to_string());
+            }
+            ConfigItem::Shell => {
+                state.edit.shell = Some(trimmed.to_string());
+            }
+            ConfigItem::ArchiveDir => {
+                state.edit.archive_dir = Some(trimmed.to_string());
+            }
+            ConfigItem::ArchiveTtlDays => match trimmed.parse::<u64>() {
+                Ok(n) if n > u64::MAX / 86_400 => {
+                    // 秒変換 (ttl_days * 86_400) で u64 overflow を起こす値は reject。
+                    // 起動時 sweep / chira gc の Duration::from_secs(n * 86_400) が
+                    // debug でパニック、release で wrap して意図せず短い TTL に化けるため
+                    self.status = i18n::status_config_ttl_too_large(self.lang).into();
+                    return;
+                }
+                Ok(n) => state.edit.archive_ttl_days = Some(n),
+                Err(_) => {
+                    self.status = i18n::status_config_invalid_number(self.lang).into();
+                    return;
+                }
+            },
+            // bool / keep はこの経路を通らない
+            _ => {}
+        }
+        self.input.clear();
+        state.submode = ConfigSubmode::Browse;
+    }
+
+    fn on_key_config_keep_list(&mut self, key: KeyEvent) {
+        let Some(state) = self.config_state.as_mut() else {
+            return;
+        };
+        let ConfigSubmode::KeepList { selected } = state.submode else {
+            return;
+        };
+        let len = state.keep.len();
+        match key.code {
+            KeyCode::Esc => state.submode = ConfigSubmode::Browse,
+            KeyCode::Down | KeyCode::Char('j') => {
+                if len > 0 {
+                    let new_sel = (selected + 1).min(len - 1);
+                    state.submode = ConfigSubmode::KeepList { selected: new_sel };
+                }
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                let new_sel = selected.saturating_sub(1);
+                state.submode = ConfigSubmode::KeepList { selected: new_sel };
+            }
+            KeyCode::Char('a') => {
+                state.keep.push(String::new());
+                let idx = state.keep.len() - 1;
+                state.edit.archive_keep = Some(state.keep.clone());
+                self.input.clear();
+                state.submode = ConfigSubmode::KeepEdit { index: idx };
+            }
+            KeyCode::Char('d') => {
+                if selected < state.keep.len() {
+                    state.keep.remove(selected);
+                    state.edit.archive_keep = Some(state.keep.clone());
+                    let new_sel = if state.keep.is_empty() {
+                        0
+                    } else {
+                        selected.min(state.keep.len() - 1)
+                    };
+                    state.submode = ConfigSubmode::KeepList { selected: new_sel };
+                }
+            }
+            KeyCode::Enter if selected < state.keep.len() => {
+                self.input = state.keep[selected].clone();
+                state.submode = ConfigSubmode::KeepEdit { index: selected };
+            }
+            _ => {}
+        }
+    }
+
+    fn on_key_config_keep_edit(&mut self, key: KeyEvent) {
+        let Some(state) = self.config_state.as_mut() else {
+            return;
+        };
+        let ConfigSubmode::KeepEdit { index } = state.submode else {
+            return;
+        };
+        match key.code {
+            KeyCode::Esc => {
+                // 編集中の空 entry はキャンセル時に削除 (a で追加してすぐ Esc した場合)
+                if let Some(s) = state.keep.get(index)
+                    && s.is_empty()
+                {
+                    state.keep.remove(index);
+                    state.edit.archive_keep = Some(state.keep.clone());
+                }
+                self.input.clear();
+                let new_sel = state
+                    .keep
+                    .len()
+                    .saturating_sub(1)
+                    .min(index.saturating_sub(0));
+                state.submode = ConfigSubmode::KeepList { selected: new_sel };
+            }
+            KeyCode::Enter => {
+                let trimmed = self.input.trim().to_string();
+                if trimmed.is_empty() {
+                    if index < state.keep.len() {
+                        state.keep.remove(index);
+                    }
+                } else if let Some(slot) = state.keep.get_mut(index) {
+                    *slot = trimmed;
+                }
+                state.edit.archive_keep = Some(state.keep.clone());
+                self.input.clear();
+                let new_sel = if state.keep.is_empty() {
+                    0
+                } else {
+                    index.min(state.keep.len() - 1)
+                };
+                state.submode = ConfigSubmode::KeepList { selected: new_sel };
+            }
+            KeyCode::Backspace => {
+                self.input.pop();
+            }
+            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.input.push(c);
+            }
+            _ => {}
+        }
+    }
+
+    fn save_config(&mut self) {
+        let Some(state) = self.config_state.as_ref() else {
+            return;
+        };
+        let Some(path) = state.save_path.clone() else {
+            self.status = i18n::status_config_no_save_path(self.lang).into();
+            return;
+        };
+        match config::save(&path, &state.edit) {
+            Ok(()) => self.status = i18n::status_config_saved(self.lang, &path.display()),
+            Err(e) => self.status = i18n::status_config_save_failed(self.lang, &e),
+        }
+    }
+}
+
+/// 編集モード入りの初期入力値として使う。
+/// env override 中の文字列項目では空文字を返す: effective の env 値をそのまま入れて Enter 確定すると、
+/// env が外れた瞬間に env 値で config が永続化される silent overwrite を招く (Source::Env が見えている
+/// 間は config 値そのものを TUI から取れないため、上書きを意図する場合は明示入力を要求する設計)。
+fn current_value_string(state: &ConfigState, item: ConfigItem) -> String {
+    match item {
+        ConfigItem::Dir => state
+            .edit
+            .dir
+            .clone()
+            .unwrap_or_else(|| effective_initial(&state.effective.dir)),
+        ConfigItem::Editor => state
+            .edit
+            .editor
+            .clone()
+            .unwrap_or_else(|| effective_initial(&state.effective.editor)),
+        ConfigItem::Shell => state
+            .edit
+            .shell
+            .clone()
+            .unwrap_or_else(|| effective_initial(&state.effective.shell)),
+        ConfigItem::ArchiveDir => state
+            .edit
+            .archive_dir
+            .clone()
+            .unwrap_or_else(|| state.effective.archive_dir.0.clone()),
+        ConfigItem::ArchiveTtlDays => {
+            let v = state
+                .edit
+                .archive_ttl_days
+                .or(state.effective.archive_ttl_days.0);
+            v.map(|n| n.to_string()).unwrap_or_default()
+        }
+        // bool / keep は別経路 (Space toggle / KeepList)
+        _ => String::new(),
+    }
+}
+
+/// effective ペア (value, source) から編集モードの初期入力値を取り出す。
+/// env override 時は空文字を返す (env 値の silent overwrite 回避)。
+fn effective_initial(effective: &(String, crate::config::Source)) -> String {
+    use crate::config::Source;
+    match &effective.1 {
+        Source::Env(_) => String::new(),
+        _ => effective.0.clone(),
+    }
+}
+
+/// env 由来の string 項目で、ユーザーが未編集 (`state.edit` に値なし) の状態かを判定する。
+/// 編集モード初期値が空文字 (`effective_initial` 経由) で開始する条件と一致しており、
+/// 空のまま Enter された場合の silent 削除を防ぐ no-op ガードに使う。
+fn is_env_backed_string_initial_edit(state: &ConfigState, item: ConfigItem) -> bool {
+    use crate::config::Source;
+    match item {
+        ConfigItem::Dir => {
+            state.edit.dir.is_none() && matches!(&state.effective.dir.1, Source::Env(_))
+        }
+        ConfigItem::Editor => {
+            state.edit.editor.is_none() && matches!(&state.effective.editor.1, Source::Env(_))
+        }
+        ConfigItem::Shell => {
+            state.edit.shell.is_none() && matches!(&state.effective.shell.1, Source::Env(_))
+        }
+        _ => false,
+    }
 }
 
 fn preview_file(lang: Lang, path: &Path) -> String {
@@ -531,7 +944,7 @@ mod tests {
     #[test]
     fn new_file_requests_editor_then_delete() {
         let root = temp_root();
-        let mut app = App::with_root(root.clone(), Lang::En);
+        let mut app = App::with_root(root.clone(), Lang::En, Config::default());
 
         // n で新規ファイル → 既定名を消して明示名 → Enter で作成し $EDITOR 要求
         app.on_key(key('n'));
@@ -564,7 +977,7 @@ mod tests {
     fn enter_on_file_requests_editor() {
         let root = temp_root();
         scratch::create_file(&root, "a.md").unwrap();
-        let mut app = App::with_root(root.clone(), Lang::En);
+        let mut app = App::with_root(root.clone(), Lang::En, Config::default());
         app.on_key(special(KeyCode::Enter));
         assert!(matches!(app.pending, Some(Pending::Editor(_))));
         std::fs::remove_dir_all(&root).unwrap();
@@ -573,7 +986,7 @@ mod tests {
     #[test]
     fn create_dir_descend_ascend() {
         let root = temp_root();
-        let mut app = App::with_root(root.clone(), Lang::En);
+        let mut app = App::with_root(root.clone(), Lang::En, Config::default());
 
         app.on_key(key('N'));
         app.input.clear();
@@ -599,7 +1012,7 @@ mod tests {
     fn arrow_keys_navigate_like_hl() {
         let root = temp_root();
         scratch::create_dir(&root, "ws").unwrap();
-        let mut app = App::with_root(root.clone(), Lang::En);
+        let mut app = App::with_root(root.clone(), Lang::En, Config::default());
 
         // → で降下、← で親へ
         app.on_key(special(KeyCode::Right));
@@ -618,7 +1031,7 @@ mod tests {
         let root = temp_root();
         scratch::create_file(&root, "a.md").unwrap();
         scratch::create_dir(&root, "ws").unwrap();
-        let mut app = App::with_root(root.clone(), Lang::En);
+        let mut app = App::with_root(root.clone(), Lang::En, Config::default());
         let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
 
         term.draw(|f| crate::ui::render(f, &app)).unwrap(); // Browse
@@ -641,7 +1054,7 @@ mod tests {
     #[test]
     fn help_opens_and_any_key_closes() {
         let root = temp_root();
-        let mut app = App::with_root(root.clone(), Lang::En);
+        let mut app = App::with_root(root.clone(), Lang::En, Config::default());
         app.on_key(key('?'));
         assert_eq!(app.mode, Mode::Help);
         // h は Help 中はナビゲーションせず閉じるだけ
@@ -656,7 +1069,7 @@ mod tests {
         let root = temp_root();
         scratch::create_file(&root, "alpha.md").unwrap();
         scratch::create_file(&root, "beta.md").unwrap();
-        let mut app = App::with_root(root.clone(), Lang::En);
+        let mut app = App::with_root(root.clone(), Lang::En, Config::default());
         assert_eq!(app.visible().len(), 2);
 
         app.on_key(key('/'));
@@ -671,7 +1084,7 @@ mod tests {
     fn create_while_filtering_clears_search_and_selects_new() {
         let root = temp_root();
         scratch::create_file(&root, "alpha.md").unwrap();
-        let mut app = App::with_root(root.clone(), Lang::En);
+        let mut app = App::with_root(root.clone(), Lang::En, Config::default());
 
         // "alp" で絞り込み確定 (Enter で Browse に戻るがフィルタは残る) → 一致しない名前で新規作成
         app.on_key(key('/'));
@@ -696,7 +1109,7 @@ mod tests {
     fn enter_cancels_delete_confirm() {
         let root = temp_root();
         scratch::create_file(&root, "keep.md").unwrap();
-        let mut app = App::with_root(root.clone(), Lang::En);
+        let mut app = App::with_root(root.clone(), Lang::En, Config::default());
 
         app.on_key(key('d'));
         assert_eq!(app.mode, Mode::ConfirmDelete);
@@ -705,6 +1118,225 @@ mod tests {
         assert_eq!(app.mode, Mode::Browse);
         assert!(root.join("keep.md").exists());
 
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn comma_enters_config_mode_and_esc_exits() {
+        let root = temp_root();
+        let mut app = App::with_root(root.clone(), Lang::En, Config::default());
+        app.on_key(key(','));
+        assert_eq!(app.mode, Mode::Config);
+        assert!(app.config_state.is_some());
+        app.on_key(special(KeyCode::Esc));
+        assert_eq!(app.mode, Mode::Browse);
+        assert!(app.config_state.is_none());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn config_edit_string_field_updates_edit_struct() {
+        let root = temp_root();
+        let mut app = App::with_root(root.clone(), Lang::En, Config::default());
+        app.on_key(key(','));
+        // editor は ConfigItem::ALL の index 1
+        app.on_key(special(KeyCode::Down));
+        app.on_key(special(KeyCode::Enter));
+        // 初期値が env 由来で長さが環境依存のため、Backspace でなく直接クリアする
+        app.input.clear();
+        typed(&mut app, "nvim");
+        app.on_key(special(KeyCode::Enter));
+        let edit = &app.config_state.as_ref().unwrap().edit;
+        assert_eq!(edit.editor.as_deref(), Some("nvim"));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn config_space_toggles_bool() {
+        // archive.on_startup は ConfigItem::ALL の index 5
+        let root = temp_root();
+        let mut app = App::with_root(root.clone(), Lang::En, Config::default());
+        app.on_key(key(','));
+        for _ in 0..5 {
+            app.on_key(special(KeyCode::Down));
+        }
+        app.on_key(key(' '));
+        let edit = &app.config_state.as_ref().unwrap().edit;
+        assert_eq!(edit.archive_on_startup, Some(true));
+        app.on_key(key(' '));
+        let edit = &app.config_state.as_ref().unwrap().edit;
+        assert_eq!(edit.archive_on_startup, Some(false));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn config_ttl_rejects_non_numeric_input() {
+        let root = temp_root();
+        let mut app = App::with_root(root.clone(), Lang::En, Config::default());
+        app.on_key(key(','));
+        for _ in 0..3 {
+            app.on_key(special(KeyCode::Down));
+        }
+        app.on_key(special(KeyCode::Enter));
+        typed(&mut app, "abc");
+        app.on_key(special(KeyCode::Enter));
+        assert!(app.status.contains("integer") || app.status.contains("数値"));
+        assert_eq!(
+            app.config_state.as_ref().unwrap().edit.archive_ttl_days,
+            None
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn config_ttl_rejects_seconds_overflow() {
+        // ttl_days * 86_400 が u64 overflow を起こす値は reject。
+        // Duration::from_secs(panic in debug, wrap in release) を起動時 sweep / chira gc が呼ぶため
+        let root = temp_root();
+        let mut app = App::with_root(root.clone(), Lang::En, Config::default());
+        app.on_key(key(','));
+        // ArchiveTtlDays は index 3
+        for _ in 0..3 {
+            app.on_key(special(KeyCode::Down));
+        }
+        app.on_key(special(KeyCode::Enter));
+        app.input.clear();
+        // u64::MAX / 86_400 + 1 は秒変換で overflow
+        let too_large = (u64::MAX / 86_400) + 1;
+        typed(&mut app, &too_large.to_string());
+        app.on_key(special(KeyCode::Enter));
+        assert!(
+            app.status.contains("overflow") || app.status.contains("u64"),
+            "status should mention overflow: {}",
+            app.status
+        );
+        // edit は触られていない
+        assert_eq!(
+            app.config_state.as_ref().unwrap().edit.archive_ttl_days,
+            None
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn config_default_dir_uses_resolved_root() {
+        // dir が default (env / config 未設定) の場合、TUI 表示用に self.root の解決済み path を出す。
+        // 空文字のまま表示すると default 保存先 ($XDG_DATA_HOME/chira / ~/.local/share/chira) が
+        // ユーザーに見えない
+        let root = temp_root();
+        let mut app = App::with_root(root.clone(), Lang::En, Config::default());
+        app.on_key(key(','));
+        let eff_dir = &app.config_state.as_ref().unwrap().effective.dir;
+        assert_eq!(eff_dir.1, crate::config::Source::Default);
+        // root の実 path が dir.0 に入っている (空文字ではない)
+        assert!(
+            !eff_dir.0.is_empty(),
+            "effective.dir.0 should not be empty for default"
+        );
+        assert_eq!(eff_dir.0, root.display().to_string());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn config_keep_list_add_edit_remove() {
+        let root = temp_root();
+        let mut app = App::with_root(root.clone(), Lang::En, Config::default());
+        app.on_key(key(','));
+        for _ in 0..6 {
+            app.on_key(special(KeyCode::Down));
+        }
+        app.on_key(special(KeyCode::Enter));
+        app.on_key(key('a'));
+        typed(&mut app, "pinned-*");
+        app.on_key(special(KeyCode::Enter));
+        let keep = &app.config_state.as_ref().unwrap().keep;
+        assert_eq!(keep, &vec!["pinned-*".to_string()]);
+        app.on_key(key('d'));
+        let keep = &app.config_state.as_ref().unwrap().keep;
+        assert!(keep.is_empty());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn config_edit_env_override_empty_enter_is_noop() {
+        // env override 中の項目で空入力のまま Enter → no-op (state.edit に Some("") を入れない)。
+        // Some("") は config.rs 側でキー削除扱いになるため、env override 中に edit 値が空のまま
+        // 保存されると元の config 値を silent 削除しうる
+        let root = temp_root();
+        let mut app = App::with_root(root.clone(), Lang::En, Config::default());
+        app.on_key(key(','));
+        // Editor (index 1) を env override 状態にする
+        app.config_state.as_mut().unwrap().effective.editor = (
+            "/usr/bin/env-editor".into(),
+            crate::config::Source::Env("EDITOR"),
+        );
+        app.on_key(special(KeyCode::Down));
+        app.on_key(special(KeyCode::Enter));
+        // 初期値は空 (env override 規範) のまま Enter
+        assert_eq!(app.input, "");
+        app.on_key(special(KeyCode::Enter));
+        // state.edit.editor は None のまま (silent 削除を起こす Some("") にならない)
+        assert_eq!(app.config_state.as_ref().unwrap().edit.editor, None);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn config_edit_env_overridden_field_starts_empty() {
+        // env override 中の string 項目を編集モードで開くと初期値は空文字。
+        // effective に env 値が入っているが、確定で env 値を config に書く事故を回避する。
+        // CHIRA_DIR を set してから with_root を呼び、Dir 行を選んで Enter
+        let root = temp_root();
+        let mut app = App::with_root(root.clone(), Lang::En, Config::default());
+        // env override 状態を再現するため effective を手で書き換える
+        app.on_key(key(','));
+        app.config_state.as_mut().unwrap().effective.dir =
+            ("/env/path".into(), crate::config::Source::Env("CHIRA_DIR"));
+
+        // Dir 行は index 0 (デフォルト選択)
+        app.on_key(special(KeyCode::Enter));
+        // 初期値は env 値 ("/env/path") ではなく空文字
+        assert_eq!(app.input, "");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn config_save_writes_to_provided_path() {
+        let root = temp_root();
+        let mut app = App::with_root(root.clone(), Lang::En, Config::default());
+        app.on_key(key(','));
+        app.on_key(special(KeyCode::Down));
+        app.on_key(special(KeyCode::Enter));
+        app.input.clear();
+        typed(&mut app, "nvim");
+        app.on_key(special(KeyCode::Enter));
+        let save_target = root.join("config.toml");
+        app.config_state.as_mut().unwrap().save_path = Some(save_target.clone());
+        app.on_key(key('s'));
+        assert!(save_target.exists());
+        let text = std::fs::read_to_string(&save_target).unwrap();
+        assert!(text.contains("editor = \"nvim\""));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn config_renders_without_panic() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let root = temp_root();
+        let mut app = App::with_root(root.clone(), Lang::En, Config::default());
+        app.on_key(key(','));
+
+        let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        term.draw(|f| crate::ui::render(f, &app)).unwrap();
+
+        app.on_key(special(KeyCode::Enter));
+        term.draw(|f| crate::ui::render(f, &app)).unwrap();
+        app.on_key(special(KeyCode::Esc));
+
+        // 極小サイズでもレイアウト計算が panic しないこと
+        let mut tiny = Terminal::new(TestBackend::new(20, 6)).unwrap();
+        tiny.draw(|f| crate::ui::render(f, &app)).unwrap();
         std::fs::remove_dir_all(&root).unwrap();
     }
 
@@ -737,7 +1369,7 @@ mod tests {
     #[test]
     fn t_with_no_actions_shows_status_and_stays_browse() {
         let root = temp_root();
-        let mut app = App::with_root(root.clone(), Lang::En);
+        let mut app = App::with_root(root.clone(), Lang::En, Config::default());
         // actions 未設定なら t はピッカーを開かず status を出すだけ
         app.on_key(key('t'));
         assert_eq!(app.mode, Mode::Browse);
@@ -748,7 +1380,7 @@ mod tests {
     #[test]
     fn action_flow_creates_dir_and_requests_run_on_confirm() {
         let root = temp_root();
-        let mut app = App::with_root(root.clone(), Lang::En);
+        let mut app = App::with_root(root.clone(), Lang::En, Config::default());
         app.actions = vec![demo_action("git init -q")];
 
         app.on_key(key('t'));
@@ -796,7 +1428,7 @@ mod tests {
     #[test]
     fn action_confirm_cancel_creates_nothing() {
         let root = temp_root();
-        let mut app = App::with_root(root.clone(), Lang::En);
+        let mut app = App::with_root(root.clone(), Lang::En, Config::default());
         app.actions = vec![demo_action("git init -q")];
 
         app.on_key(key('t'));
@@ -816,7 +1448,7 @@ mod tests {
     #[test]
     fn input_esc_clears_action_so_plain_n_makes_empty_dir() {
         let root = temp_root();
-        let mut app = App::with_root(root.clone(), Lang::En);
+        let mut app = App::with_root(root.clone(), Lang::En, Config::default());
         app.actions = vec![demo_action("true")];
 
         // t → 選択 → name 入力中に Esc
@@ -843,7 +1475,7 @@ mod tests {
         use ratatui::backend::TestBackend;
 
         let root = temp_root();
-        let mut app = App::with_root(root.clone(), Lang::En);
+        let mut app = App::with_root(root.clone(), Lang::En, Config::default());
         app.actions = vec![demo_action("git init -q")];
         let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
 
@@ -862,7 +1494,7 @@ mod tests {
     #[test]
     fn default_action_routes_n_into_action_flow() {
         let root = temp_root();
-        let mut app = App::with_root(root.clone(), Lang::En);
+        let mut app = App::with_root(root.clone(), Lang::En, Config::default());
         app.actions = vec![demo_action("git init -q")];
         app.default_action = Some("demo".into());
 
@@ -890,7 +1522,7 @@ mod tests {
     #[test]
     fn default_action_unknown_name_falls_back_to_plain_n() {
         let root = temp_root();
-        let mut app = App::with_root(root.clone(), Lang::En);
+        let mut app = App::with_root(root.clone(), Lang::En, Config::default());
         app.actions = vec![demo_action("git init -q")];
         // 存在しないアクション名 → silent fallback (従来 N と同じ空ディレクトリ作成)
         app.default_action = Some("missing-action".into());

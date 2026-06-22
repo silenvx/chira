@@ -18,6 +18,7 @@ ratatui = "0.30.2"
 chrono = "0.4.45"
 shell-words = "1.1.1"
 toml = { version = "1.1.2", default-features = false, features = ["parse", "serde"] }
+toml_edit = "0.25.12"
 
 [profile.release]
 opt-level = "z"

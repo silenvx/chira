@@ -137,6 +137,9 @@ default_action = "nix-sandbox"
   - `CHIRA_ROOT` — scratch のルート（`$CHIRA_DIR`）
 - 非ゼロ終了時はディレクトリを**残す**（auto-rollback しない — 部分的な成果や調査情報を捨てない方針）。`.chira/bootstrap-failed` を中に書き、一覧でその dir の先頭に `[!]` を表示するので半端な dir を見分けられる。retry は `d` で削除してからアクションを再実行する（chira は常に新規 dir を作成し、既存名は reject する）。あるいは `.chira/bootstrap-failed` を手動削除すれば再実行せずに marker だけクリアできる。
 - `default_action = "<name>"` を書くと素の `N` キーもピッカー無しで同じ confirm + run flow に流れる。未設定（既定）なら `N` は従来通り空ディレクトリ作成。存在しないアクション名は silently fallback して従来 `N` の挙動に戻る。
+### TUI 内からの編集
+
+TUI 起動中に `,` キーで設定画面を開く。各項目の現在値と source（`(env: CHIRA_DIR)` / `(config)` / `(default)`）、解決順、書き込み先の絶対パスが表示される。`Enter` で選択中の項目を編集（bool は `Space` で toggle）、`s` で同じ `config.toml` に書き戻し（フォーマットとコメントは保持）、`Esc` でファイル一覧に戻る。env で上書きされている項目には `⚠ env override` バッジが付く — config.toml には保存されるが、次回起動時も env が優先される。TUI で書き戻した内容は次回起動から有効（現在のセッションは起動時に読んだスナップショットで動き続ける）。
 
 ## 表示言語
 
@@ -167,6 +170,7 @@ CHIRA_LANG=en chira   # 英語 UI を強制
 | `r` | 名前を変更 |
 | `d` | 削除（確認あり。ディレクトリは中身ごと） |
 | `/` | 名前で絞り込み検索 |
+| `,` | 設定画面を開く（`config.toml` を上書き編集） |
 | `?` | ヘルプを画面に表示（何かキーで閉じる） |
 | `q` | 終了 |
 

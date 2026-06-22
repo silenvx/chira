@@ -5,8 +5,9 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, List, ListItem, ListState, Paragraph, Wrap};
 
-use crate::app::{App, InputKind, Mode};
-use crate::i18n;
+use crate::app::{App, ConfigItem, ConfigState, ConfigSubmode, InputKind, Mode};
+use crate::config::Source;
+use crate::i18n::{self, ConfigItemHelp};
 
 pub fn render(frame: &mut Frame, app: &App) {
     let [header, body, footer] = Layout::vertical([
@@ -30,6 +31,10 @@ pub fn render(frame: &mut Frame, app: &App) {
         render_confirm_action(frame, app, body);
     } else if app.mode == Mode::Help {
         render_help(frame, app, body);
+    } else if app.mode == Mode::Config
+        && let Some(state) = app.config_state.as_ref()
+    {
+        render_config(frame, app, state, body);
     }
 }
 
@@ -292,6 +297,22 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
         Mode::ActionPick => i18n::footer_action_pick(app.lang),
         Mode::ConfirmAction => i18n::footer_confirm_action(app.lang),
         Mode::Help => i18n::footer_help_close(app.lang),
+        Mode::Config => match app
+            .config_state
+            .as_ref()
+            .map(|s| std::mem::discriminant(&s.submode))
+        {
+            Some(d) if d == std::mem::discriminant(&ConfigSubmode::Edit) => {
+                i18n::footer_config_edit(app.lang)
+            }
+            Some(d) if d == std::mem::discriminant(&ConfigSubmode::KeepEdit { index: 0 }) => {
+                i18n::footer_config_edit(app.lang)
+            }
+            Some(d) if d == std::mem::discriminant(&ConfigSubmode::KeepList { selected: 0 }) => {
+                i18n::footer_config_keep(app.lang)
+            }
+            _ => i18n::footer_config(app.lang),
+        },
     };
     let line = if app.status.is_empty() {
         Line::from(Span::styled(help, Style::new().fg(Color::Gray)))
@@ -313,6 +334,296 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
         y: area.y + (area.height.saturating_sub(h)) / 2,
         width: w,
         height: h,
+    }
+}
+
+fn render_config(frame: &mut Frame, app: &App, state: &ConfigState, area: Rect) {
+    frame.render_widget(Clear, area);
+
+    let [list_area, detail_area] =
+        Layout::vertical([Constraint::Min(0), Constraint::Length(7)]).areas(area);
+
+    // KeepList / KeepEdit 中はメイン pane を keep entries 一覧に差し替え、
+    // どの entry が選択中か視覚的に分かるようにする (誤削除/誤編集の防止)
+    match state.submode {
+        ConfigSubmode::KeepList { selected } | ConfigSubmode::KeepEdit { index: selected } => {
+            render_keep_list(frame, app, state, selected, list_area);
+        }
+        _ => render_config_list(frame, app, state, list_area),
+    }
+    render_config_detail(frame, app, state, detail_area);
+
+    match state.submode {
+        ConfigSubmode::Edit => render_config_input(frame, app, state, area),
+        ConfigSubmode::KeepEdit { .. } => render_config_input(frame, app, state, area),
+        _ => {}
+    }
+}
+
+fn render_keep_list(
+    frame: &mut Frame,
+    app: &App,
+    state: &ConfigState,
+    selected: usize,
+    area: Rect,
+) {
+    let items: Vec<ListItem> = if state.keep.is_empty() {
+        vec![ListItem::new(Line::from(Span::styled(
+            i18n::config_keep_empty(app.lang),
+            Style::new().fg(Color::DarkGray),
+        )))]
+    } else {
+        state
+            .keep
+            .iter()
+            .map(|s| ListItem::new(Line::raw(s.clone())))
+            .collect()
+    };
+    let list = List::new(items)
+        .block(
+            Block::bordered()
+                .title(i18n::config_keep_title(app.lang))
+                .border_style(Color::Cyan),
+        )
+        .highlight_style(Style::new().add_modifier(Modifier::REVERSED))
+        .highlight_symbol("› ");
+    let mut s = ListState::default();
+    if !state.keep.is_empty() {
+        s.select(Some(selected.min(state.keep.len() - 1)));
+    }
+    frame.render_stateful_widget(list, area, &mut s);
+}
+
+fn render_config_list(frame: &mut Frame, app: &App, state: &ConfigState, area: Rect) {
+    let mut items: Vec<ListItem> = Vec::new();
+    let mut last_section: Option<&'static str> = None;
+    for (i, &item) in ConfigItem::ALL.iter().enumerate() {
+        let section = section_of(app.lang, item);
+        if last_section != Some(section) {
+            items.push(ListItem::new(Line::from(Span::styled(
+                format!("  {section}"),
+                Style::new().fg(Color::DarkGray).bold(),
+            ))));
+            last_section = Some(section);
+        }
+        items.push(ListItem::new(config_row_line(app, state, item, i)));
+    }
+
+    let list = List::new(items)
+        .block(Block::bordered().title(i18n::config_title(app.lang)))
+        .highlight_style(Style::new().add_modifier(Modifier::REVERSED))
+        .highlight_symbol("› ");
+    let mut s = ListState::default();
+    s.select(Some(selected_visual_index(state.selected)));
+    frame.render_stateful_widget(list, area, &mut s);
+}
+
+/// general (3 項目 + 見出し 1) + archive (4 項目 + 見出し 1) のリストで、
+/// 論理選択 index (0..7) を visual index に写像する (見出し 2 行を跨ぐため +1/+2)。
+fn selected_visual_index(logical: usize) -> usize {
+    if logical < 3 {
+        1 + logical
+    } else {
+        1 + 1 + logical
+    }
+}
+
+fn config_row_line<'a>(
+    app: &App,
+    state: &'a ConfigState,
+    item: ConfigItem,
+    _idx: usize,
+) -> Line<'a> {
+    let help = help_for(app.lang, item);
+    let (value_str, source) = value_and_source(state, item);
+    let mut spans = vec![
+        Span::raw("    "),
+        Span::styled(format!("{:<20}", help.label), Style::new().fg(Color::Cyan)),
+        Span::styled(format!("{:<32}", truncate(&value_str, 30)), Style::new()),
+        Span::raw("  "),
+        source_span(app, &source),
+    ];
+    // env override badge は元の effective source (起動時の優先順位) で判定する。
+    // 編集して state.edit に値が入ると source は Config に変わるが、env は依然優先される
+    // ため badge を消すと「保存値が有効」とユーザーを誤認させる
+    if matches!(effective_source(state, item), Source::Env(_)) {
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(
+            i18n::config_env_override_badge(app.lang),
+            Style::new().fg(Color::Yellow),
+        ));
+    }
+    Line::from(spans)
+}
+
+fn render_config_detail(frame: &mut Frame, app: &App, state: &ConfigState, area: Rect) {
+    let item = ConfigItem::ALL[state.selected];
+    let help = help_for(app.lang, item);
+
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled(help.label, Style::new().fg(Color::Cyan).bold()),
+            Span::raw("  "),
+            Span::styled(
+                format!("[{}]", help.type_hint),
+                Style::new().fg(Color::DarkGray),
+            ),
+        ]),
+        Line::raw(help.description.to_string()),
+        Line::from(vec![
+            Span::styled("Resolution: ", Style::new().fg(Color::DarkGray)),
+            Span::raw(help.resolution),
+        ]),
+    ];
+    // env override note も元の effective source で判定 (badge と同じ理由)
+    if let Source::Env(var) = effective_source(state, item) {
+        lines.push(Line::from(Span::styled(
+            i18n::config_env_override_note(app.lang, var),
+            Style::new().fg(Color::Yellow),
+        )));
+    }
+    let saves = match state.save_path.as_ref() {
+        Some(p) => i18n::config_saves_to(app.lang, &p.display()),
+        None => i18n::config_saves_to_unknown(app.lang).into(),
+    };
+    lines.push(Line::from(Span::styled(
+        saves,
+        Style::new().fg(Color::DarkGray),
+    )));
+
+    frame.render_widget(
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: false })
+            .block(Block::bordered()),
+        area,
+    );
+}
+
+fn render_config_input(frame: &mut Frame, app: &App, state: &ConfigState, area: Rect) {
+    let item = ConfigItem::ALL[state.selected];
+    let label = match state.submode {
+        ConfigSubmode::KeepEdit { .. } => "archive.keep[]",
+        _ => help_for(app.lang, item).label,
+    };
+    let popup = centered(area, 70, 3);
+    frame.render_widget(Clear, popup);
+    let text = Line::from(vec![
+        Span::raw(&app.input),
+        Span::styled("▌", Style::new().fg(Color::Cyan)),
+    ]);
+    frame.render_widget(
+        Paragraph::new(text).block(
+            Block::bordered()
+                .title(i18n::config_input_title(app.lang, label))
+                .border_style(Color::Cyan),
+        ),
+        popup,
+    );
+}
+
+/// 編集中の項目は source を Config に変える (出力ファイルに書かれる予定の値のため)。
+fn value_and_source(state: &ConfigState, item: ConfigItem) -> (String, Source) {
+    match item {
+        ConfigItem::Dir => match state.edit.dir.clone() {
+            Some(v) => (v, Source::Config),
+            None => state.effective.dir.clone(),
+        },
+        ConfigItem::Editor => match state.edit.editor.clone() {
+            Some(v) => (v, Source::Config),
+            None => state.effective.editor.clone(),
+        },
+        ConfigItem::Shell => match state.edit.shell.clone() {
+            Some(v) => (v, Source::Config),
+            None => state.effective.shell.clone(),
+        },
+        ConfigItem::ArchiveTtlDays => {
+            let (v, src) = match state.edit.archive_ttl_days {
+                Some(n) => (Some(n), Source::Config),
+                None => state.effective.archive_ttl_days.clone(),
+            };
+            (
+                v.map(|n| n.to_string()).unwrap_or_else(|| "(unset)".into()),
+                src,
+            )
+        }
+        ConfigItem::ArchiveDir => match state.edit.archive_dir.clone() {
+            Some(v) => (v, Source::Config),
+            None => state.effective.archive_dir.clone(),
+        },
+        ConfigItem::ArchiveOnStartup => {
+            let (v, src) = match state.edit.archive_on_startup {
+                Some(b) => (b, Source::Config),
+                None => state.effective.archive_on_startup.clone(),
+            };
+            (if v { "true".into() } else { "false".into() }, src)
+        }
+        ConfigItem::ArchiveKeep => {
+            let keep = state.keep.clone();
+            let src = if state.edit.archive_keep.is_some() {
+                Source::Config
+            } else {
+                state.effective.archive_keep.1.clone()
+            };
+            let s = if keep.is_empty() {
+                "[]".into()
+            } else {
+                format!("[{}]", keep.join(", "))
+            };
+            (s, src)
+        }
+    }
+}
+
+/// state.effective から item の元 source (env / config / default) を取り出す。
+/// value_and_source は state.edit を含む見かけの source を返すため、
+/// env override badge / note の判定にはこちら (起動時の優先順位を反映) を使う。
+fn effective_source(state: &ConfigState, item: ConfigItem) -> Source {
+    match item {
+        ConfigItem::Dir => state.effective.dir.1.clone(),
+        ConfigItem::Editor => state.effective.editor.1.clone(),
+        ConfigItem::Shell => state.effective.shell.1.clone(),
+        ConfigItem::ArchiveTtlDays => state.effective.archive_ttl_days.1.clone(),
+        ConfigItem::ArchiveDir => state.effective.archive_dir.1.clone(),
+        ConfigItem::ArchiveOnStartup => state.effective.archive_on_startup.1.clone(),
+        ConfigItem::ArchiveKeep => state.effective.archive_keep.1.clone(),
+    }
+}
+
+fn section_of(lang: i18n::Lang, item: ConfigItem) -> &'static str {
+    match item {
+        ConfigItem::Dir | ConfigItem::Editor | ConfigItem::Shell => {
+            i18n::config_section_general(lang)
+        }
+        _ => i18n::config_section_archive(lang),
+    }
+}
+
+fn help_for(lang: i18n::Lang, item: ConfigItem) -> ConfigItemHelp {
+    match item {
+        ConfigItem::Dir => i18n::config_item_dir(lang),
+        ConfigItem::Editor => i18n::config_item_editor(lang),
+        ConfigItem::Shell => i18n::config_item_shell(lang),
+        ConfigItem::ArchiveTtlDays => i18n::config_item_archive_ttl(lang),
+        ConfigItem::ArchiveDir => i18n::config_item_archive_dir(lang),
+        ConfigItem::ArchiveOnStartup => i18n::config_item_archive_on_startup(lang),
+        ConfigItem::ArchiveKeep => i18n::config_item_archive_keep(lang),
+    }
+}
+
+fn source_span<'a>(app: &App, source: &Source) -> Span<'a> {
+    match source {
+        Source::Env(var) => Span::styled(
+            i18n::config_source_env(app.lang, var),
+            Style::new().fg(Color::Yellow),
+        ),
+        Source::Config => Span::styled(
+            i18n::config_source_config(app.lang).to_string(),
+            Style::new().fg(Color::Green),
+        ),
+        Source::Default => Span::styled(
+            i18n::config_source_default(app.lang).to_string(),
+            Style::new().fg(Color::DarkGray),
+        ),
     }
 }
 

@@ -528,6 +528,7 @@ pub fn help_rows(lang: Lang) -> &'static [(&'static str, &'static str)] {
             ("d", "削除 (確認あり)"),
             ("/", "名前で絞り込み検索"),
             ("?", "このヘルプ"),
+            (",", "設定"),
             ("q", "終了"),
         ],
         Lang::En => &[
@@ -543,6 +544,7 @@ pub fn help_rows(lang: Lang) -> &'static [(&'static str, &'static str)] {
             ("d", "Delete (with confirmation)"),
             ("/", "Filter by name"),
             ("?", "This help"),
+            (",", "Configuration"),
             ("q", "Quit"),
         ],
     }
@@ -551,10 +553,10 @@ pub fn help_rows(lang: Lang) -> &'static [(&'static str, &'static str)] {
 pub fn footer_browse(lang: Lang) -> &'static str {
     match lang {
         Lang::Ja => {
-            "j/k:移動  l:開く  h:親  s:シェル  n:新規  t:アクション  /:検索  ?:ヘルプ  q:終了"
+            "j/k:移動  l:開く  h:親  s:シェル  n:新規  t:アクション  /:検索  ,:設定  ?:ヘルプ  q:終了"
         }
         Lang::En => {
-            "j/k:move  l:open  h:parent  s:shell  n:new  t:action  /:filter  ?:help  q:quit"
+            "j/k:move  l:open  h:parent  s:shell  n:new  t:action  /:filter  ,:config  ?:help  q:quit"
         }
     }
 }
@@ -661,6 +663,274 @@ pub fn status_cli_rm_cancelled(lang: Lang) -> &'static str {
     match lang {
         Lang::Ja => "rm: キャンセルしました",
         Lang::En => "rm: cancelled",
+    }
+}
+
+// ─── Config TUI ──────────────────────────────────────────────────────────────
+
+pub fn config_title(lang: Lang) -> &'static str {
+    match lang {
+        Lang::Ja => " 設定 ",
+        Lang::En => " Configuration ",
+    }
+}
+
+pub fn config_section_general(lang: Lang) -> &'static str {
+    match lang {
+        Lang::Ja => "一般",
+        Lang::En => "general",
+    }
+}
+
+pub fn config_section_archive(_lang: Lang) -> &'static str {
+    "archive"
+}
+
+pub fn config_source_env(_lang: Lang, var: &str) -> String {
+    format!("(env: {var})")
+}
+
+pub fn config_source_config(_lang: Lang) -> &'static str {
+    "(config)"
+}
+
+pub fn config_source_default(_lang: Lang) -> &'static str {
+    "(default)"
+}
+
+pub fn config_env_override_badge(lang: Lang) -> &'static str {
+    match lang {
+        Lang::Ja => "⚠ env が優先",
+        Lang::En => "⚠ env override",
+    }
+}
+
+pub fn config_saves_to(lang: Lang, path: &dyn std::fmt::Display) -> String {
+    match lang {
+        Lang::Ja => format!("保存先: {path}"),
+        Lang::En => format!("Saves to: {path}"),
+    }
+}
+
+pub fn config_saves_to_unknown(lang: Lang) -> &'static str {
+    match lang {
+        Lang::Ja => "保存先: $HOME も $XDG_CONFIG_HOME も解決できないため保存不能",
+        Lang::En => "Saves to: cannot save (neither $HOME nor $XDG_CONFIG_HOME resolves)",
+    }
+}
+
+pub fn config_env_override_note(lang: Lang, var: &str) -> String {
+    match lang {
+        Lang::Ja => format!(
+            "⚠ 現在は env ${var} で上書きされています。config.toml には保存しますが、起動時は env が優先されます。"
+        ),
+        Lang::En => format!(
+            "⚠ Currently overridden by env ${var}. Saving will update config.toml but the env var will take precedence at startup."
+        ),
+    }
+}
+
+/// 設定項目 1 行のラベル・型ヒント・説明・解決順。TUI render が下部のヘルプ表示で参照する。
+pub struct ConfigItemHelp {
+    pub label: &'static str,
+    pub type_hint: &'static str,
+    pub description: &'static str,
+    pub resolution: &'static str,
+}
+
+pub fn config_item_dir(lang: Lang) -> ConfigItemHelp {
+    match lang {
+        Lang::Ja => ConfigItemHelp {
+            label: "dir",
+            type_hint: "string",
+            description: "scratch エントリの保存先ディレクトリ。",
+            resolution: "$CHIRA_DIR → config.dir → $XDG_DATA_HOME/chira → ~/.local/share/chira",
+        },
+        Lang::En => ConfigItemHelp {
+            label: "dir",
+            type_hint: "string",
+            description: "Storage location for scratch entries.",
+            resolution: "$CHIRA_DIR → config.dir → $XDG_DATA_HOME/chira → ~/.local/share/chira",
+        },
+    }
+}
+
+pub fn config_item_editor(lang: Lang) -> ConfigItemHelp {
+    match lang {
+        Lang::Ja => ConfigItemHelp {
+            label: "editor",
+            type_hint: "string",
+            description: "ファイルを開くときに使う $EDITOR (引数可)。",
+            resolution: "$EDITOR → config.editor → vi",
+        },
+        Lang::En => ConfigItemHelp {
+            label: "editor",
+            type_hint: "string",
+            description: "Editor command used to open files (arguments allowed).",
+            resolution: "$EDITOR → config.editor → vi",
+        },
+    }
+}
+
+pub fn config_item_shell(lang: Lang) -> ConfigItemHelp {
+    match lang {
+        Lang::Ja => ConfigItemHelp {
+            label: "shell",
+            type_hint: "string",
+            description: "`s` で開く $SHELL (引数可)。",
+            resolution: "$SHELL → config.shell → /bin/sh",
+        },
+        Lang::En => ConfigItemHelp {
+            label: "shell",
+            type_hint: "string",
+            description: "Shell opened with `s` (arguments allowed).",
+            resolution: "$SHELL → config.shell → /bin/sh",
+        },
+    }
+}
+
+pub fn config_item_archive_ttl(lang: Lang) -> ConfigItemHelp {
+    match lang {
+        Lang::Ja => ConfigItemHelp {
+            label: "archive.ttl_days",
+            type_hint: "u64 (日)",
+            description: "mtime がこの日数を超えたエントリを archive 対象にする。0 or 未設定で off。",
+            resolution: "config 値のみ (env 経由なし)",
+        },
+        Lang::En => ConfigItemHelp {
+            label: "archive.ttl_days",
+            type_hint: "u64 (days)",
+            description: "Entries whose mtime exceeds this are archived. 0 / unset disables archive.",
+            resolution: "config only (no env override)",
+        },
+    }
+}
+
+pub fn config_item_archive_dir(lang: Lang) -> ConfigItemHelp {
+    match lang {
+        Lang::Ja => ConfigItemHelp {
+            label: "archive.dir",
+            type_hint: "string",
+            description: "archive 先ディレクトリ。未設定で <CHIRA_DIR>/.archive を使う。",
+            resolution: "config 値のみ",
+        },
+        Lang::En => ConfigItemHelp {
+            label: "archive.dir",
+            type_hint: "string",
+            description: "Archive destination. Defaults to <CHIRA_DIR>/.archive when unset.",
+            resolution: "config only",
+        },
+    }
+}
+
+pub fn config_item_archive_on_startup(lang: Lang) -> ConfigItemHelp {
+    match lang {
+        Lang::Ja => ConfigItemHelp {
+            label: "archive.on_startup",
+            type_hint: "bool",
+            description: "TUI 起動時に archive sweep を走らせるか。",
+            resolution: "config 値のみ",
+        },
+        Lang::En => ConfigItemHelp {
+            label: "archive.on_startup",
+            type_hint: "bool",
+            description: "Run archive sweep when the TUI starts.",
+            resolution: "config only",
+        },
+    }
+}
+
+pub fn config_item_archive_keep(lang: Lang) -> ConfigItemHelp {
+    match lang {
+        Lang::Ja => ConfigItemHelp {
+            label: "archive.keep",
+            type_hint: "string[]",
+            description: "archive 対象から除外するファイル名 glob (例: pinned-*, longterm/)。",
+            resolution: "config 値のみ",
+        },
+        Lang::En => ConfigItemHelp {
+            label: "archive.keep",
+            type_hint: "string[]",
+            description: "Globs whose names are kept (e.g. pinned-*, longterm/).",
+            resolution: "config only",
+        },
+    }
+}
+
+pub fn footer_config(lang: Lang) -> &'static str {
+    match lang {
+        Lang::Ja => "↑↓:選択  Enter:編集  Space:toggle  s:保存  Esc:戻る",
+        Lang::En => "↑↓:select  Enter:edit  Space:toggle  s:save  Esc:back",
+    }
+}
+
+pub fn footer_config_edit(lang: Lang) -> &'static str {
+    match lang {
+        Lang::Ja => "Enter:確定  Esc:キャンセル",
+        Lang::En => "Enter:confirm  Esc:cancel",
+    }
+}
+
+pub fn footer_config_keep(lang: Lang) -> &'static str {
+    match lang {
+        Lang::Ja => "↑↓:選択  a:追加  d:削除  Enter:編集  Esc:戻る",
+        Lang::En => "↑↓:select  a:add  d:remove  Enter:edit  Esc:back",
+    }
+}
+
+pub fn status_config_saved(lang: Lang, path: &dyn std::fmt::Display) -> String {
+    match lang {
+        Lang::Ja => format!("保存しました: {path}"),
+        Lang::En => format!("Saved: {path}"),
+    }
+}
+
+pub fn status_config_save_failed(lang: Lang, e: &dyn std::fmt::Display) -> String {
+    match lang {
+        Lang::Ja => format!("保存に失敗: {e}"),
+        Lang::En => format!("Failed to save: {e}"),
+    }
+}
+
+pub fn status_config_invalid_number(lang: Lang) -> &'static str {
+    match lang {
+        Lang::Ja => "数値として解釈できません (0 以上の整数を入力)",
+        Lang::En => "Not a valid non-negative integer",
+    }
+}
+
+pub fn status_config_ttl_too_large(lang: Lang) -> &'static str {
+    match lang {
+        Lang::Ja => "値が大きすぎます (ttl_days * 86_400 が u64 を超えます)",
+        Lang::En => "Value too large (ttl_days * 86_400 would overflow u64)",
+    }
+}
+
+pub fn status_config_no_save_path(lang: Lang) -> &'static str {
+    match lang {
+        Lang::Ja => "保存先のパスが解決できません ($HOME も $XDG_CONFIG_HOME も未設定)",
+        Lang::En => "No save path resolves ($HOME and $XDG_CONFIG_HOME both unset)",
+    }
+}
+
+pub fn config_keep_title(lang: Lang) -> &'static str {
+    match lang {
+        Lang::Ja => " archive.keep ",
+        Lang::En => " archive.keep ",
+    }
+}
+
+pub fn config_keep_empty(lang: Lang) -> &'static str {
+    match lang {
+        Lang::Ja => "  (空)  a で追加",
+        Lang::En => "  (empty)  press a to add",
+    }
+}
+
+pub fn config_input_title(lang: Lang, key: &str) -> String {
+    match lang {
+        Lang::Ja => format!(" 編集: {key} "),
+        Lang::En => format!(" Edit: {key} "),
     }
 }
 

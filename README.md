@@ -99,6 +99,10 @@ Each value falls back independently when omitted. Resolution priority (high → 
 CHIRA_DIR=/tmp/other chira   # env wins over config's dir
 ```
 
+### Editing from the TUI
+
+Inside the TUI press `,` to open the configuration screen. It lists every option with its current value and source — `(env: CHIRA_DIR)` / `(config)` / `(default)` — plus the resolution order and the absolute path the changes will be saved to. `Enter` edits the highlighted entry (`Space` toggles booleans), `s` writes the changes back to the same `config.toml` while preserving formatting and comments, and `Esc` returns to the file list. Items currently overridden by an env var are marked `⚠ env override` — the file is still updated, but the env var continues to take precedence on the next launch. Values written by the TUI take effect on the next start (the current session keeps the snapshot loaded at boot).
+
 ## Actions (run a command in a freshly created directory)
 
 To bootstrap a new directory with a command of your choice (rsync a skeleton, `git clone`, scaffold via `cookiecutter`, anything), define `[actions.<name>]` entries in `config.toml`. Pressing `t` opens a picker, asks for a directory name, shows the resolved command in a confirm screen (trust gate — config-derived shell runs as you), then on `y` creates the directory and runs the command via `sh -c` inside it.
@@ -167,6 +171,7 @@ CHIRA_LANG=en chira   # force English UI
 | `r` | rename |
 | `d` | delete (with confirmation; directories are removed recursively) |
 | `/` | filter by name |
+| `,` | open the configuration screen (edit `config.toml` in place) |
 | `?` | show help on screen (any key closes it) |
 | `q` | quit |
 

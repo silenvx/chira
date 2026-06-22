@@ -303,11 +303,9 @@ impl App {
             }
             KeyCode::Char('g') | KeyCode::Home => self.action_cursor = 0,
             KeyCode::Char('G') | KeyCode::End => self.action_cursor = len.saturating_sub(1),
-            KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right => {
-                if self.action_cursor < len {
-                    self.selected_action = Some(self.action_cursor);
-                    self.begin_input(InputKind::NewDir);
-                }
+            KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right if self.action_cursor < len => {
+                self.selected_action = Some(self.action_cursor);
+                self.begin_input(InputKind::NewDir);
             }
             _ => {}
         }

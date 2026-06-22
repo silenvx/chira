@@ -540,7 +540,13 @@ impl App {
     }
 
     fn enter_config(&mut self) {
-        let effective = config::effective(&self.config);
+        let mut effective = config::effective(&self.config);
+        // dir が default (env / config 未設定) の場合、effective.dir.0 は空文字のため
+        // ユーザーには実際の保存先 ($XDG_DATA_HOME/chira → ~/.local/share/chira) が見えない。
+        // scratch::root で解決済みの self.root を表示用に差し込む (source は Default のまま)
+        if matches!(effective.dir.1, config::Source::Default) {
+            effective.dir.0 = self.root.display().to_string();
+        }
         let keep = effective.archive_keep.0.clone();
         self.config_state = Some(ConfigState {
             effective,
@@ -692,6 +698,13 @@ impl App {
                 state.edit.archive_dir = Some(trimmed.to_string());
             }
             ConfigItem::ArchiveTtlDays => match trimmed.parse::<u64>() {
+                Ok(n) if n > u64::MAX / 86_400 => {
+                    // 秒変換 (ttl_days * 86_400) で u64 overflow を起こす値は reject。
+                    // 起動時 sweep / chira gc の Duration::from_secs(n * 86_400) が
+                    // debug でパニック、release で wrap して意図せず短い TTL に化けるため
+                    self.status = i18n::status_config_ttl_too_large(self.lang).into();
+                    return;
+                }
                 Ok(n) => state.edit.archive_ttl_days = Some(n),
                 Err(_) => {
                     self.status = i18n::status_config_invalid_number(self.lang).into();
@@ -1172,6 +1185,55 @@ mod tests {
             app.config_state.as_ref().unwrap().edit.archive_ttl_days,
             None
         );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn config_ttl_rejects_seconds_overflow() {
+        // ttl_days * 86_400 が u64 overflow を起こす値は reject。
+        // Duration::from_secs(panic in debug, wrap in release) を起動時 sweep / chira gc が呼ぶため
+        let root = temp_root();
+        let mut app = App::with_root(root.clone(), Lang::En, Config::default());
+        app.on_key(key(','));
+        // ArchiveTtlDays は index 3
+        for _ in 0..3 {
+            app.on_key(special(KeyCode::Down));
+        }
+        app.on_key(special(KeyCode::Enter));
+        app.input.clear();
+        // u64::MAX / 86_400 + 1 は秒変換で overflow
+        let too_large = (u64::MAX / 86_400) + 1;
+        typed(&mut app, &too_large.to_string());
+        app.on_key(special(KeyCode::Enter));
+        assert!(
+            app.status.contains("overflow") || app.status.contains("u64"),
+            "status should mention overflow: {}",
+            app.status
+        );
+        // edit は触られていない
+        assert_eq!(
+            app.config_state.as_ref().unwrap().edit.archive_ttl_days,
+            None
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn config_default_dir_uses_resolved_root() {
+        // dir が default (env / config 未設定) の場合、TUI 表示用に self.root の解決済み path を出す。
+        // 空文字のまま表示すると default 保存先 ($XDG_DATA_HOME/chira / ~/.local/share/chira) が
+        // ユーザーに見えない
+        let root = temp_root();
+        let mut app = App::with_root(root.clone(), Lang::En, Config::default());
+        app.on_key(key(','));
+        let eff_dir = &app.config_state.as_ref().unwrap().effective.dir;
+        assert_eq!(eff_dir.1, crate::config::Source::Default);
+        // root の実 path が dir.0 に入っている (空文字ではない)
+        assert!(
+            !eff_dir.0.is_empty(),
+            "effective.dir.0 should not be empty for default"
+        );
+        assert_eq!(eff_dir.0, root.display().to_string());
         std::fs::remove_dir_all(&root).unwrap();
     }
 

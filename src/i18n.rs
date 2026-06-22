@@ -899,6 +899,13 @@ pub fn status_config_invalid_number(lang: Lang) -> &'static str {
     }
 }
 
+pub fn status_config_ttl_too_large(lang: Lang) -> &'static str {
+    match lang {
+        Lang::Ja => "値が大きすぎます (ttl_days * 86_400 が u64 を超えます)",
+        Lang::En => "Value too large (ttl_days * 86_400 would overflow u64)",
+    }
+}
+
 pub fn status_config_no_save_path(lang: Lang) -> &'static str {
     match lang {
         Lang::Ja => "保存先のパスが解決できません ($HOME も $XDG_CONFIG_HOME も未設定)",

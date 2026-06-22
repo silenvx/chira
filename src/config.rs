@@ -287,7 +287,8 @@ pub fn save_path() -> Option<PathBuf> {
 /// 既存 config.toml に編集差分をマージして書き戻す (フォーマット・コメント保持)。
 /// 親ディレクトリは必要に応じて mkdir -p、書き込みは tmp → rename の atomic 経路。
 /// path が symlink の場合は実体側に書き戻し、dotfiles 管理経路 (`~/.config/chira/config.toml`
-/// → `~/dotfiles/...`) を壊さない。
+/// → `~/dotfiles/...`) を壊さない。既存ファイルの permission (例: `0600`) は umask に倒れず
+/// rename 後も保持する (機微な command / path が読みやすい mode に格下げされるのを防ぐ)。
 pub fn save(path: &Path, edit: &ConfigEdit) -> io::Result<()> {
     let text = match fs::read_to_string(path) {
         Ok(s) => s,
@@ -303,9 +304,36 @@ pub fn save(path: &Path, edit: &ConfigEdit) -> io::Result<()> {
     {
         fs::create_dir_all(parent)?;
     }
+    // 既存 mode を保持: 不在 (新規作成時) や 読めない (権限なし) は None で続行 = umask 任せ
+    let preserved_mode = preserve_mode(&target);
     let tmp = tmp_path(&target);
     fs::write(&tmp, new_text)?;
+    if let Some(mode) = preserved_mode {
+        apply_mode(&tmp, mode)?;
+    }
     fs::rename(&tmp, &target)?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn preserve_mode(target: &Path) -> Option<u32> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::metadata(target).ok().map(|m| m.permissions().mode())
+}
+
+#[cfg(not(unix))]
+fn preserve_mode(_target: &Path) -> Option<u32> {
+    None
+}
+
+#[cfg(unix)]
+fn apply_mode(path: &Path, mode: u32) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(mode))
+}
+
+#[cfg(not(unix))]
+fn apply_mode(_path: &Path, _mode: u32) -> io::Result<()> {
     Ok(())
 }
 
@@ -876,6 +904,28 @@ unrelated_key = \"keep me\"
         assert_eq!(parsed.archive.ttl_days, Some(30));
         // 元の値は coerce 時に保持
         assert_eq!(parsed.archive.dir.as_deref(), Some("~/old"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_preserves_existing_file_mode() {
+        // 既存 config.toml が 0600 (機微 path / command を含むため restrict 想定) のとき、
+        // save 後も 0600 を維持する (tmp→rename が umask に倒れ 0644 に格下げするのを防ぐ)
+        use std::os::unix::fs::PermissionsExt;
+        let dir = temp_dir();
+        let path = dir.join("config.toml");
+        fs::write(&path, "editor = \"vi\"\n").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        let edit = ConfigEdit {
+            editor: Some("nvim".into()),
+            ..Default::default()
+        };
+        save(&path, &edit).unwrap();
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "file mode after save should remain 0600");
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("editor = \"nvim\""));
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

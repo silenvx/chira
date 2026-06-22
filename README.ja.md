@@ -62,7 +62,7 @@ CHIRA_DIR=~/scratch chira   # 場所を変える
 # ~/.config/chira/config.toml
 dir = "~/scratch"      # 保存場所（先頭の ~ は $HOME に展開される）
 editor = "nvim"        # 外部エディタ（引数も可。例: "code --wait"）
-shell = "/bin/zsh"     # `s` で開くシェル
+shell = "/bin/zsh"     # `s` で開くシェル（引数も可。例: "zsh -l"）
 ```
 
 各項目は省略すると個別にフォールバックする。優先順位（高 → 低）は **環境変数 → 設定ファイル → ハードコードのデフォルト** で、既存の環境変数ベースの使い方はそのまま動き続ける:

@@ -62,7 +62,7 @@ For persistent settings without touching your shell startup files, chira reads a
 # ~/.config/chira/config.toml
 dir = "~/scratch"      # storage location (leading ~ is expanded to $HOME)
 editor = "nvim"        # external editor (arguments allowed, e.g. "code --wait")
-shell = "/bin/zsh"     # shell opened with `s`
+shell = "/bin/zsh"     # shell opened with `s` (arguments allowed, e.g. "zsh -l")
 ```
 
 Each value falls back independently when omitted. Resolution priority (high → low) is **environment variable → config file → built-in default**, so existing env-based usage keeps working:

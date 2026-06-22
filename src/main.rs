@@ -107,7 +107,7 @@ fn run_external(
 
     let result = match pending {
         Pending::Editor(path) => spawn_editor(lang, path, config.editor.as_deref()),
-        Pending::Shell(dir) => spawn_shell(dir, config.shell.as_deref()),
+        Pending::Shell(dir) => spawn_shell(lang, dir, config.shell.as_deref()),
     };
 
     enable_raw_mode()?;
@@ -116,19 +116,19 @@ fn run_external(
     result
 }
 
-/// $EDITOR を shell の語分割規則 (shell-words) で argv に分解する。
-/// 引数付き (`code --wait`) と quote 済みスペース入りパス (`'/My Apps/subl' -w`) の両方を扱う (whitespace split は後者を壊す)。
-fn editor_argv(lang: i18n::Lang, editor: &str) -> io::Result<Vec<String>> {
-    let argv = shell_words::split(editor).map_err(|e| {
+/// $EDITOR / $SHELL / config 値を shell の語分割規則 (shell-words) で argv に分解する。
+/// 引数付き (`code --wait` / `zsh -l`) と quote 済みスペース入りパス (`'/My Apps/subl' -w`) の両方を扱う (whitespace split は後者を壊す)。
+fn command_argv(lang: i18n::Lang, command: &str) -> io::Result<Vec<String>> {
+    let argv = shell_words::split(command).map_err(|e| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
-            i18n::err_editor_parse(lang, &e),
+            i18n::err_command_parse(lang, &e),
         )
     })?;
     if argv.is_empty() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            i18n::err_editor_empty(lang),
+            i18n::err_command_empty(lang),
         ));
     }
     Ok(argv)
@@ -137,15 +137,20 @@ fn editor_argv(lang: i18n::Lang, editor: &str) -> io::Result<Vec<String>> {
 fn spawn_editor(lang: i18n::Lang, path: &Path, config_editor: Option<&str>) -> io::Result<()> {
     let env_editor = env::var("EDITOR").ok();
     let editor = resolve_external(env_editor.as_deref(), config_editor, "vi");
-    let argv = editor_argv(lang, &editor)?;
+    let argv = command_argv(lang, &editor)?;
     Command::new(&argv[0]).args(&argv[1..]).arg(path).status()?;
     Ok(())
 }
 
-fn spawn_shell(dir: &Path, config_shell: Option<&str>) -> io::Result<()> {
+fn spawn_shell(lang: i18n::Lang, dir: &Path, config_shell: Option<&str>) -> io::Result<()> {
     let env_shell = env::var("SHELL").ok();
     let shell = resolve_external(env_shell.as_deref(), config_shell, "/bin/sh");
-    Command::new(shell).current_dir(dir).status()?;
+    // editor と同じく引数付き ($SHELL="zsh -l" や config shell="bash -l") を許容する
+    let argv = command_argv(lang, &shell)?;
+    Command::new(&argv[0])
+        .args(&argv[1..])
+        .current_dir(dir)
+        .status()?;
     Ok(())
 }
 
@@ -174,15 +179,17 @@ mod tests {
     }
 
     #[test]
-    fn editor_argv_handles_args_and_quoted_paths() {
+    fn command_argv_handles_args_and_quoted_paths() {
         let l = i18n::Lang::En;
-        assert_eq!(editor_argv(l, "vi").unwrap(), ["vi"]);
-        assert_eq!(editor_argv(l, "code --wait").unwrap(), ["code", "--wait"]);
+        assert_eq!(command_argv(l, "vi").unwrap(), ["vi"]);
+        assert_eq!(command_argv(l, "code --wait").unwrap(), ["code", "--wait"]);
+        // shell も同じ分割を通すため引数付き shell が argv に分かれる
+        assert_eq!(command_argv(l, "zsh -l").unwrap(), ["zsh", "-l"]);
         // quote 済みのスペース入りパスは 1 引数として保たれる
         assert_eq!(
-            editor_argv(l, "'/My Apps/subl' -w").unwrap(),
+            command_argv(l, "'/My Apps/subl' -w").unwrap(),
             ["/My Apps/subl", "-w"]
         );
-        assert!(editor_argv(l, "").is_err());
+        assert!(command_argv(l, "").is_err());
     }
 }

@@ -125,17 +125,17 @@ pub fn err_external_launch(lang: Lang, e: &dyn std::fmt::Display) -> String {
     }
 }
 
-pub fn err_editor_parse(lang: Lang, e: &dyn std::fmt::Display) -> String {
+pub fn err_command_parse(lang: Lang, e: &dyn std::fmt::Display) -> String {
     match lang {
-        Lang::Ja => format!("$EDITOR の解析に失敗: {e}"),
-        Lang::En => format!("failed to parse $EDITOR: {e}"),
+        Lang::Ja => format!("コマンドの解析に失敗: {e}"),
+        Lang::En => format!("failed to parse command: {e}"),
     }
 }
 
-pub fn err_editor_empty(lang: Lang) -> &'static str {
+pub fn err_command_empty(lang: Lang) -> &'static str {
     match lang {
-        Lang::Ja => "$EDITOR が空です",
-        Lang::En => "$EDITOR is empty",
+        Lang::Ja => "コマンドが空です",
+        Lang::En => "command is empty",
     }
 }
 

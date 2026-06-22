@@ -202,8 +202,8 @@ Running `chira` with no arguments launches the TUI. Pass a subcommand to run a o
 |---|---|---|
 | `chira ls [<path>]` | (list view) | One name per line; `-l` prints `<mtime>\t<size>\t<name>` |
 | `chira tree [<path>]` | (right pane) | Tree view (depth 4, up to 100 lines) |
-| `chira new [<name>]` | `n` | Create a file and open `$EDITOR`; `--no-edit` skips the editor. When `<name>` is omitted, the name is generated from `[new] name_template` (default `scratch-YYYYMMDD-HHMMSS.md`) |
-| `chira mkdir [<name>]` | `N` | Create a directory. When `<name>` is omitted, defaults to `scratch-YYYYMMDD-HHMMSS` |
+| `chira new [<name>]` | `n` | Create a file and open `$EDITOR`; `--no-edit` skips the editor. When `<name>` is omitted, the name is generated from `[new] name_template` (default `scratch-%Y%m%d-%H%M%S.md`) |
+| `chira mkdir [<name>]` | `N` | Create a directory. When `<name>` is omitted, defaults to `scratch-%Y%m%d-%H%M%S` |
 | `chira edit <name>` | `e` | Open `<name>` in `$EDITOR` |
 | `chira shell [<dir>]` | `s` | Open `$SHELL` in `<dir>` (or in `CHIRA_DIR` if omitted) |
 | `chira rm <name>` | `d` | Delete; `-r` is required for directories, `-f` skips confirmation |

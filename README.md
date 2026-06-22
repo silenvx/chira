@@ -58,11 +58,11 @@ Or `~/.config/fish/functions/chira.fish` (fish):
 function chira
     set -l tmp (mktemp); or return
     command chira --cd-file $tmp $argv
-    set -l status $status
+    set -l cmd_status $status
     set -l dir (cat $tmp)
     rm -f $tmp
     test -n "$dir"; and test -d "$dir"; and test "$dir" != "$PWD"; and cd "$dir"
-    return $status
+    return $cmd_status
 end
 ```
 

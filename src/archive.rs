@@ -93,8 +93,10 @@ pub fn sweep(lang: Lang, opts: Options<'_>) -> io::Result<Report> {
             continue;
         }
         // .keep probe は TTL gate の後に実行する。TTL 内の fresh dir で permission deny の
-        // probe が走ると不要な errors push + exit 1 になり cron/startup sweep を壊すため
-        if entry.is_dir {
+        // probe が走ると不要な errors push + exit 1 になり cron/startup sweep を壊すため。
+        // 実 dir のみ probe (symlink-to-dir は entry.is_dir = true でも対象外: target の .keep を follow すると
+        // 外部 dir の .keep で symlink 自身が誤って保護されるため)
+        if entry.is_dir && !entry.path.is_symlink() {
             match entry.path.join(KEEP_MARKER).try_exists() {
                 Ok(true) => {
                     report.kept += 1;

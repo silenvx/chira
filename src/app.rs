@@ -33,10 +33,12 @@ pub enum Pending {
     Editor(PathBuf),
     Shell(PathBuf),
     /// アクションの `run` を新ディレクトリ (dir) 内で実行する。root は CHIRA_ROOT。
+    /// `action_name` は失敗時 sentinel (`.chira/bootstrap-failed`) に記録する。
     Run {
         dir: PathBuf,
         root: PathBuf,
         command: String,
+        action_name: String,
     },
 }
 
@@ -57,6 +59,9 @@ pub struct App {
     pub lang: Lang,
     /// config.toml の `[actions.*]` (名前順)。`t` ピッカーで選ぶ。
     pub actions: Vec<Action>,
+    /// config.toml の `default_action`。`N` (NewDir) を押した時に actions に該当があれば
+    /// confirm + run フローに流す (opt-in、default は None で従来の N 挙動)。
+    pub default_action: Option<String>,
     /// ActionPick 中のカーソル位置 (actions のインデックス)。
     pub action_cursor: usize,
     /// 選択中のアクション。name 入力 → ConfirmAction まで持ち回す。
@@ -85,6 +90,7 @@ impl App {
             should_quit: false,
             lang,
             actions: Vec::new(),
+            default_action: None,
             action_cursor: 0,
             selected_action: None,
             pending_name: String::new(),
@@ -193,7 +199,16 @@ impl App {
                 self.pending = Some(Pending::Shell(target));
             }
             KeyCode::Char('n') => self.begin_input(InputKind::NewFile),
-            KeyCode::Char('N') => self.begin_input(InputKind::NewDir),
+            KeyCode::Char('N') => {
+                // default_action が指定されていれば `t` 経路と同じ confirm + run フローに流す。
+                // 不明な名前や未設定なら従来の空ディレクトリ作成のまま (silent fallback)。
+                if let Some(name) = self.default_action.as_deref()
+                    && let Some(idx) = self.actions.iter().position(|a| a.name == name)
+                {
+                    self.selected_action = Some(idx);
+                }
+                self.begin_input(InputKind::NewDir);
+            }
             KeyCode::Char('t') => {
                 if self.actions.is_empty() {
                     self.status = i18n::status_no_actions(self.lang).into();
@@ -351,6 +366,7 @@ impl App {
                     dir,
                     root,
                     command: action.run,
+                    action_name: action.name,
                 });
             }
             Err(e) => self.status = i18n::status_create_failed(self.lang, &e),
@@ -764,11 +780,13 @@ mod tests {
                 dir,
                 root: r,
                 command,
+                action_name,
             }) => {
                 assert!(dir.ends_with("ws"));
                 assert!(dir.is_absolute(), "CHIRA_TARGET 契約: dir は絶対パス");
                 assert!(r.is_absolute(), "CHIRA_ROOT 契約: root は絶対パス");
                 assert_eq!(command, "git init -q");
+                assert_eq!(action_name, "demo");
             }
             _ => panic!("confirm の y で Pending::Run を要求するはず"),
         }
@@ -837,6 +855,53 @@ mod tests {
         app.on_key(special(KeyCode::Enter));
         assert_eq!(app.mode, Mode::ConfirmAction);
         term.draw(|f| crate::ui::render(f, &app)).unwrap(); // ConfirmAction
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn default_action_routes_n_into_action_flow() {
+        let root = temp_root();
+        let mut app = App::with_root(root.clone(), Lang::En);
+        app.actions = vec![demo_action("git init -q")];
+        app.default_action = Some("demo".into());
+
+        // N → 名前入力 → Enter で ConfirmAction へ (t を経由しない)
+        app.on_key(key('N'));
+        assert!(matches!(app.mode, Mode::Input(InputKind::NewDir)));
+        app.input.clear();
+        typed(&mut app, "ws");
+        app.on_key(special(KeyCode::Enter));
+        assert_eq!(app.mode, Mode::ConfirmAction);
+        assert_eq!(app.pending_action().map(|a| a.name.as_str()), Some("demo"));
+        assert!(
+            !root.join("ws").exists(),
+            "default_action 経由でも confirm 前は作成しない"
+        );
+
+        // y で create + run を Pending に積む
+        app.on_key(key('y'));
+        assert!(root.join("ws").is_dir());
+        assert!(matches!(app.pending, Some(Pending::Run { .. })));
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn default_action_unknown_name_falls_back_to_plain_n() {
+        let root = temp_root();
+        let mut app = App::with_root(root.clone(), Lang::En);
+        app.actions = vec![demo_action("git init -q")];
+        // 存在しないアクション名 → silent fallback (従来 N と同じ空ディレクトリ作成)
+        app.default_action = Some("missing-action".into());
+
+        app.on_key(key('N'));
+        app.input.clear();
+        typed(&mut app, "plain");
+        app.on_key(special(KeyCode::Enter));
+        assert_eq!(app.mode, Mode::Browse);
+        assert!(root.join("plain").is_dir());
+        assert!(app.pending.is_none());
 
         std::fs::remove_dir_all(&root).unwrap();
     }

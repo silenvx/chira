@@ -99,6 +99,40 @@ Each value falls back independently when omitted. Resolution priority (high → 
 CHIRA_DIR=/tmp/other chira   # env wins over config's dir
 ```
 
+## Actions (run a command in a freshly created directory)
+
+To bootstrap a new directory with a command of your choice (rsync a skeleton, `git clone`, scaffold via `cookiecutter`, anything), define `[actions.<name>]` entries in `config.toml`. Pressing `t` opens a picker, asks for a directory name, shows the resolved command in a confirm screen (trust gate — config-derived shell runs as you), then on `y` creates the directory and runs the command via `sh -c` inside it.
+
+```toml
+# Bootstrap an isolated dev shell
+[actions.nix-sandbox]
+description = "Nix flake + direnv sandbox"
+run = "rsync -a ~/.config/chira/skel/nix-sandbox/ ./ && direnv allow"
+
+# Clone a sandbox repo
+[actions.clone-sandbox]
+description = "Clone my sandbox repo"
+run = "git clone --depth 1 git@github.com:me/sandbox.git ."
+
+# Delegate interpolation to a dedicated generator
+[actions.from-copier]
+run = "copier copy --trust ~/.config/chira/templates/app \"$CHIRA_TARGET\""
+
+# Optional: make `N` (plain new directory) auto-run this action.
+# Default-off; with this set, `N` becomes the same flow as `t` → <name>.
+default_action = "nix-sandbox"
+```
+
+- `description` is shown in the picker (optional). `run` is required; entries with missing/empty `run` are silently skipped.
+- The `run` command is executed via `/bin/sh -c` so pipelines (`&&`, `|`), `~` expansion, and `$VAR` work as usual.
+- chira itself does **not** interpolate file contents or filenames. If you need templating, call a dedicated tool from `run` (`cookiecutter --no-input`, `copier copy --trust`, `envsubst`, `sed`, etc.).
+- The new directory is the cwd. `run` also receives env vars:
+  - `CHIRA_TARGET` — absolute path of the new directory
+  - `CHIRA_TARGET_NAME` — directory name
+  - `CHIRA_ROOT` — scratch root (`$CHIRA_DIR`)
+- On a non-zero exit, the directory is **kept** (no auto-rollback — diagnostic state may be useful) and `.chira/bootstrap-failed` is written inside it. The list shows `[!]` in front of those directories so you can spot the half-provisioned ones. Re-running an action against the same directory clears the marker on success.
+- `default_action = "<name>"` makes the plain `N` key go through the same picker-less confirm + run flow. With it unset (default), `N` keeps creating an empty directory. An unknown name silently falls back to the plain-`N` behavior.
+
 ## Language
 
 UI strings (help overlay, status messages, prompts) follow this resolution order:
@@ -123,7 +157,8 @@ CHIRA_LANG=en chira   # force English UI
 | `e` | open the selected file in `$EDITOR` (files only) |
 | `s` | open `$SHELL` in the selected directory (or current if none) — for experiments / running agents |
 | `n` | new file (enter a name → open in `$EDITOR`) |
-| `N` | new directory |
+| `N` | new directory (with `default_action`: same as `t` + that action) |
+| `t` | new directory from an action — pick → name → confirm command → run (`[actions.*]`) |
 | `r` | rename |
 | `d` | delete (with confirmation; directories are removed recursively) |
 | `/` | filter by name |

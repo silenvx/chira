@@ -71,12 +71,20 @@ fn render_browse(frame: &mut Frame, app: &App, area: Rect) {
             } else {
                 Span::raw(e.name.clone())
             };
+            // 失敗マーカー: 直近の bootstrap が非ゼロ終了で残された半端な dir を見分ける。
+            // dir 内に `.chira/bootstrap-failed` が存在する場合のみ表示 (read_entries が判定)。
+            let marker = if e.failed {
+                Span::styled("[!] ", Style::new().fg(Color::Red).bold())
+            } else {
+                Span::raw("")
+            };
             ListItem::new(Line::from(vec![
                 Span::styled(
                     when.format("%m/%d %H:%M").to_string(),
                     Style::new().fg(Color::Gray),
                 ),
                 Span::raw("  "),
+                marker,
                 name,
             ]))
         })

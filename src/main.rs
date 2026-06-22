@@ -61,6 +61,7 @@ fn main() -> io::Result<()> {
     }
     let mut app = App::new(config.dir.as_deref())?;
     app.actions = config.actions.clone();
+    app.default_action = config.default_action.clone();
     let mut terminal = ratatui::init();
     let result = run(&mut terminal, &mut app, &config);
     ratatui::restore();
@@ -203,7 +204,22 @@ fn run_external(
         Pending::Shell(dir) => {
             external::spawn_shell(lang, dir, config.shell.as_deref()).map(|_| ())
         }
-        Pending::Run { dir, root, command } => external::spawn_run(dir, root, command).map(|_| ()),
+        Pending::Run {
+            dir,
+            root,
+            command,
+            action_name,
+        } => external::spawn_run(dir, root, command).map(|status| {
+            // 失敗 (exit != 0、シグナル終了含む) は sentinel を書いて一覧で `[!]` 表示する。
+            // 成功なら既存の sentinel を消して retry のクリアを行う。失敗 dir を残す方針 (auto-rollback しない)
+            // の下で「半端な状態」を一覧から見分けるための装置。sentinel I/O 自体の失敗は best-effort で握り潰す。
+            let code = external::exit_code_from_status(status);
+            if code == 0 {
+                let _ = scratch::clear_bootstrap_failed(dir);
+            } else {
+                let _ = scratch::write_bootstrap_failed(dir, action_name, code);
+            }
+        }),
     };
 
     enable_raw_mode()?;

@@ -147,14 +147,16 @@ fn extract_cd_file_prefix(prefix: &[String], lang: i18n::Lang) -> Result<Option<
     let mut iter = prefix.iter();
     while let Some(arg) = iter.next() {
         if arg == "--cd-file" {
-            // 次トークンが `-` 始まりなら値欠落として扱う (`--cd-file --bogus mkdir ws` で
-            // `--bogus` を path として吸収し ./--bogus ファイルを書き出す副作用を防ぐ)
+            // 値欠落扱い: `-` 始まりや既知 subcommand 名 (./mkdir 等のファイル書き出し副作用) を防ぐ
             let path = iter
                 .next()
-                .filter(|p| !p.starts_with('-'))
+                .filter(|p| !p.starts_with('-') && !cli::is_subcommand(p))
                 .ok_or_else(|| i18n::err_cd_file_needs_arg(lang).to_string())?;
             cd_file = Some(PathBuf::from(path));
         } else if let Some(path) = arg.strip_prefix("--cd-file=") {
+            if cli::is_subcommand(path) {
+                return Err(i18n::err_cd_file_needs_arg(lang).to_string());
+            }
             cd_file = Some(PathBuf::from(path));
         }
     }
@@ -284,6 +286,10 @@ mod tests {
         // `--cd-file --bogus` は値欠落扱い (`--bogus` を path として吸収すると現 cwd に
         // 意図しないファイルを書き出す副作用が生じる)
         assert!(extract_cd_file_prefix(&args(&["--cd-file", "--bogus"]), l).is_err());
+        // `--cd-file mkdir` / `--cd-file=mkdir` は subcommand 名一致で reject
+        // (誤って ./mkdir ファイルへ書き出す副作用を防ぐ)
+        assert!(extract_cd_file_prefix(&args(&["--cd-file", "mkdir"]), l).is_err());
+        assert!(extract_cd_file_prefix(&args(&["--cd-file=mkdir"]), l).is_err());
     }
 
     #[test]

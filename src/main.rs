@@ -147,20 +147,29 @@ fn extract_cd_file_prefix(prefix: &[String], lang: i18n::Lang) -> Result<Option<
     let mut iter = prefix.iter();
     while let Some(arg) = iter.next() {
         if arg == "--cd-file" {
-            // 値欠落扱い: `-` 始まりや既知 subcommand 名 (./mkdir 等のファイル書き出し副作用) を防ぐ
             let path = iter
                 .next()
-                .filter(|p| !p.starts_with('-') && !cli::is_subcommand(p))
                 .ok_or_else(|| i18n::err_cd_file_needs_arg(lang).to_string())?;
+            validate_cd_file_value(path, lang)?;
             cd_file = Some(PathBuf::from(path));
         } else if let Some(path) = arg.strip_prefix("--cd-file=") {
-            if cli::is_subcommand(path) {
-                return Err(i18n::err_cd_file_needs_arg(lang).to_string());
-            }
+            validate_cd_file_value(path, lang)?;
             cd_file = Some(PathBuf::from(path));
         }
     }
     Ok(cd_file)
+}
+
+/// `--cd-file` 値の検証 (CLI / TUI 両経路で共通)。
+/// `-` 始まり (フラグ誤吸収) と既知 subcommand 名 (./mkdir 等のファイル書き出し副作用) を reject。
+fn validate_cd_file_value(value: &str, lang: i18n::Lang) -> Result<(), String> {
+    if value.starts_with('-') {
+        return Err(i18n::err_cd_file_needs_arg(lang).to_string());
+    }
+    if cli::is_subcommand(value) {
+        return Err(i18n::err_cd_file_invalid_value(lang, value));
+    }
+    Ok(())
 }
 
 /// `--cd-file <path>` を取り出す。`--help` / `--version` は表示して終了する。
@@ -181,10 +190,12 @@ fn parse_args(argv: &[String], lang: i18n::Lang) -> Result<Option<PathBuf>, Stri
                 let path = iter
                     .next()
                     .ok_or_else(|| i18n::err_cd_file_needs_arg(lang).to_string())?;
+                validate_cd_file_value(path, lang)?;
                 cd_file = Some(PathBuf::from(path));
             }
             other => {
                 if let Some(path) = other.strip_prefix("--cd-file=") {
+                    validate_cd_file_value(path, lang)?;
                     cd_file = Some(PathBuf::from(path));
                 } else {
                     return Err(i18n::err_unknown_arg(lang, other));
@@ -283,13 +294,34 @@ mod tests {
             Some(PathBuf::from("/tmp/y"))
         );
         assert!(extract_cd_file_prefix(&args(&["--cd-file"]), l).is_err());
-        // `--cd-file --bogus` は値欠落扱い (`--bogus` を path として吸収すると現 cwd に
-        // 意図しないファイルを書き出す副作用が生じる)
+        // `-` 始まりと subcommand 名は副作用防止のため reject (両形式)
         assert!(extract_cd_file_prefix(&args(&["--cd-file", "--bogus"]), l).is_err());
-        // `--cd-file mkdir` / `--cd-file=mkdir` は subcommand 名一致で reject
-        // (誤って ./mkdir ファイルへ書き出す副作用を防ぐ)
         assert!(extract_cd_file_prefix(&args(&["--cd-file", "mkdir"]), l).is_err());
         assert!(extract_cd_file_prefix(&args(&["--cd-file=mkdir"]), l).is_err());
+    }
+
+    /// parse_args 経路 (TUI) でも CLI 経路と同じ値検証が適用されるべき
+    /// (`chira --cd-file mkdir` で TUI 起動 → 終了時 ./mkdir 書き出し副作用を防ぐ)
+    #[test]
+    fn parse_args_rejects_invalid_cd_file_values() {
+        let l = i18n::Lang::En;
+        assert!(parse_args(&args(&["--cd-file", "--bogus"]), l).is_err());
+        assert!(parse_args(&args(&["--cd-file", "mkdir"]), l).is_err());
+        assert!(parse_args(&args(&["--cd-file=mkdir"]), l).is_err());
+    }
+
+    /// subcommand 名 reject 時は専用エラー文 (誤解防止)、`-` 始まりは値欠落エラー (互換維持)
+    #[test]
+    fn validate_cd_file_value_distinguishes_reasons() {
+        let l = i18n::Lang::En;
+        let err_dash = validate_cd_file_value("--bogus", l).unwrap_err();
+        assert!(err_dash.contains("requires an argument"), "got: {err_dash}");
+        let err_sub = validate_cd_file_value("mkdir", l).unwrap_err();
+        assert!(
+            err_sub.contains("subcommand name") && err_sub.contains("mkdir"),
+            "got: {err_sub}"
+        );
+        assert!(validate_cd_file_value("/tmp/x", l).is_ok());
     }
 
     #[test]

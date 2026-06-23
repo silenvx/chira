@@ -127,6 +127,13 @@ pub fn err_cd_file_needs_arg(lang: Lang) -> &'static str {
     }
 }
 
+pub fn err_cd_file_invalid_value(lang: Lang, value: &str) -> String {
+    match lang {
+        Lang::Ja => format!("--cd-file の値にサブコマンド名 ({value}) は指定できません\n"),
+        Lang::En => format!("--cd-file value cannot be a subcommand name ({value})\n"),
+    }
+}
+
 pub fn err_cd_file_write(lang: Lang, e: &dyn std::fmt::Display) -> String {
     match lang {
         Lang::Ja => format!("chira: --cd-file の書き出しに失敗: {e}"),

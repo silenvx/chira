@@ -44,11 +44,12 @@ Add to your shell startup file (`~/.zshrc` for zsh, `~/.bashrc` for bash):
 chira() {
   local tmp; tmp="$(mktemp)" || return
   command chira --cd-file "$tmp" "$@"
-  local status=$?
+  # zsh では $status が read-only な特殊変数 ($? の別名) のため別名を使う
+  local rc=$?
   local dir; dir="$(cat "$tmp")"
   rm -f "$tmp"
   [ -n "$dir" ] && [ -d "$dir" ] && [ "$dir" != "$PWD" ] && cd "$dir"
-  return $status
+  return $rc
 }
 ```
 
@@ -66,7 +67,7 @@ function chira
 end
 ```
 
-`return $status` を最後に置くことで、`chira gc` 等の CLI サブコマンドの exit code (gc は errors > 0 で 1、引数誤りで 2) がそのまま wrapper の戻り値になる。TUI 経由で `cd` した場合も `cd` の成否ではなく chira 本体の exit code を返す。
+`return $rc` を最後に置くことで、`chira gc` 等の CLI サブコマンドの exit code (gc は errors > 0 で 1、引数誤りで 2) がそのまま wrapper の戻り値になる。TUI 経由で `cd` した場合も `cd` の成否ではなく chira 本体の exit code を返す。
 
 Now: launch `chira` → descend into a directory → quit with `q`, and your shell moves there. Right after, the shell's standard `cd -` takes you back to where you were (because `cd` sets `OLDPWD`).
 

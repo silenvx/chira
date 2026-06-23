@@ -1,6 +1,6 @@
 [package]
 name = "chira"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.88"
 description = "chirashi no ura for your terminal — a TUI for disposable, scribble-anything working directories"

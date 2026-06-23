@@ -61,10 +61,12 @@ chira — 一時的な scratch ディレクトリを管理する TUI/CLI
 
 usage: chira                          TUI を起動する
        chira [--cd-file <path>]       TUI 起動 (終了時に最終 dir を書き出す)
-       chira <subcommand> [args]      CLI として 1 ショット実行
+       chira [--cd-file <path>] <subcommand> [args]
+                                      CLI として 1 ショット実行 (mkdir は作成 dir を書き出す)
+       chira <subcommand> [args]      CLI として 1 ショット実行 (`--cd-file` なし)
 
-TUI オプション:
-  --cd-file <path>   終了時に最終ディレクトリを <path> へ書き出す
+グローバルオプション:
+  --cd-file <path>   TUI 終了時または mkdir 実行時に対象ディレクトリを <path> へ書き出す
                      (シェル関数で cd するための連携用。README 参照)
   -h, --help         このヘルプを表示
   -V, --version      バージョン情報を表示
@@ -90,10 +92,12 @@ chira — Manage throwaway scratch directories from a TUI/CLI.
 
 usage: chira                          Launch the TUI
        chira [--cd-file <path>]       Launch the TUI (write final dir on exit)
-       chira <subcommand> [args]      One-shot CLI invocation
+       chira [--cd-file <path>] <subcommand> [args]
+                                      One-shot CLI invocation (mkdir writes the created dir)
+       chira <subcommand> [args]      One-shot CLI invocation (without `--cd-file`)
 
-TUI options:
-  --cd-file <path>   On exit, write the final directory to <path>
+Global options:
+  --cd-file <path>   On TUI exit, or when running `mkdir`, write the target directory to <path>
                      (for shell-function cd integration; see README)
   -h, --help         Show this help
   -V, --version      Print version information
@@ -120,6 +124,20 @@ pub fn err_cd_file_needs_arg(lang: Lang) -> &'static str {
     match lang {
         Lang::Ja => "--cd-file には引数が必要です\n",
         Lang::En => "--cd-file requires an argument\n",
+    }
+}
+
+pub fn err_cd_file_invalid_value(lang: Lang, value: &str) -> String {
+    match lang {
+        Lang::Ja => format!("--cd-file の値にサブコマンド名 ({value}) は指定できません\n"),
+        Lang::En => format!("--cd-file value cannot be a subcommand name ({value})\n"),
+    }
+}
+
+pub fn err_cd_file_write(lang: Lang, e: &dyn std::fmt::Display) -> String {
+    match lang {
+        Lang::Ja => format!("chira: --cd-file の書き出しに失敗: {e}"),
+        Lang::En => format!("chira: failed to write --cd-file: {e}"),
     }
 }
 

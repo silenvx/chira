@@ -1,4 +1,6 @@
+use std::fs;
 use std::io::{self, BufRead, IsTerminal, Write};
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
@@ -20,7 +22,15 @@ pub fn is_subcommand(s: &str) -> bool {
 }
 
 /// サブコマンドを実行し process exit code を返す。
-pub fn run(lang: Lang, config: &Config, sub: &str, args: Vec<String>) -> i32 {
+/// `cd_file` は wrapper が前置した `--cd-file <path>` の値。`mkdir` 等の作成系コマンドが
+/// 作成したパスを書き出し、shell 側で `cd` させるための I/O フックに使う。
+pub fn run(
+    lang: Lang,
+    config: &Config,
+    sub: &str,
+    args: Vec<String>,
+    cd_file: Option<&Path>,
+) -> i32 {
     // 各サブコマンドの -h/--help は usage を出して 0 で終わる契約
     if args.iter().any(|a| a == "-h" || a == "--help") {
         print!("{}", i18n::usage(lang));
@@ -30,7 +40,7 @@ pub fn run(lang: Lang, config: &Config, sub: &str, args: Vec<String>) -> i32 {
         "ls" => cmd_ls(lang, config, args),
         "tree" => cmd_tree(lang, config, args),
         "new" => cmd_new(lang, config, args),
-        "mkdir" => cmd_mkdir(lang, config, args),
+        "mkdir" => cmd_mkdir(lang, config, args, cd_file),
         "edit" => cmd_edit(lang, config, args),
         "shell" => cmd_shell(lang, config, args),
         "rm" => cmd_rm(lang, config, args),
@@ -351,7 +361,7 @@ fn cmd_new(lang: Lang, config: &Config, args: Vec<String>) -> i32 {
     }
 }
 
-fn cmd_mkdir(lang: Lang, config: &Config, args: Vec<String>) -> i32 {
+fn cmd_mkdir(lang: Lang, config: &Config, args: Vec<String>, cd_file: Option<&Path>) -> i32 {
     let mut name: Option<String> = None;
     for a in args {
         match a.as_str() {
@@ -377,6 +387,13 @@ fn cmd_mkdir(lang: Lang, config: &Config, args: Vec<String>) -> i32 {
         Err(e) => return cli_error(lang, "mkdir", &e),
     };
     println!("{}", path.display());
+    // wrapper が --cd-file を渡していたら作成 dir を書き出し、shell 側で `cd` させる。
+    // 書き出し失敗は dir 作成自体の成功を覆さない (warning のみで exit 0 維持)
+    if let Some(cd_path) = cd_file
+        && let Err(e) = fs::write(cd_path, path.as_os_str().as_bytes())
+    {
+        eprintln!("{}", i18n::err_cd_file_write(lang, &e));
+    }
     0
 }
 
@@ -845,9 +862,41 @@ mod tests {
             dir: Some(root.to_string_lossy().into_owned()),
             ..Default::default()
         };
-        let code = cmd_mkdir(Lang::En, &config, vec!["ws".into()]);
+        let code = cmd_mkdir(Lang::En, &config, vec!["ws".into()], None);
         assert_eq!(code, 0);
         assert!(root.join("ws").is_dir());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// `--cd-file <path>` が渡されたら作成 dir の絶対パスを書き出す
+    /// (README wrapper が後続で `cd "$(cat <path>)"` する契約)
+    #[test]
+    fn cmd_mkdir_writes_cd_file_when_specified() {
+        let root = temp_root();
+        let cd_file = root.join(".cd-file");
+        let config = Config {
+            dir: Some(root.to_string_lossy().into_owned()),
+            ..Default::default()
+        };
+        let code = cmd_mkdir(Lang::En, &config, vec!["ws".into()], Some(&cd_file));
+        assert_eq!(code, 0);
+        let written = std::fs::read_to_string(&cd_file).unwrap();
+        assert_eq!(written, root.join("ws").to_string_lossy());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// cd_file の書き出しに失敗しても mkdir 自体の成功は覆さない (exit 0 維持)。
+    #[test]
+    fn cmd_mkdir_cd_file_write_failure_is_non_fatal() {
+        let root = temp_root();
+        let bad_cd_file = root.join("missing-subdir/.cd-file");
+        let config = Config {
+            dir: Some(root.to_string_lossy().into_owned()),
+            ..Default::default()
+        };
+        let code = cmd_mkdir(Lang::En, &config, vec!["ws".into()], Some(&bad_cd_file));
+        assert_eq!(code, 0, "cd-file 書き出し失敗で exit code を変えない契約");
+        assert!(root.join("ws").is_dir(), "dir 作成は成功している");
         std::fs::remove_dir_all(&root).unwrap();
     }
 
@@ -926,7 +975,7 @@ mod tests {
             },
             ..Default::default()
         };
-        let code = cmd_mkdir(Lang::En, &config, vec![]);
+        let code = cmd_mkdir(Lang::En, &config, vec![], None);
         assert_eq!(code, 0);
         let created: Vec<_> = std::fs::read_dir(&root)
             .unwrap()
@@ -951,7 +1000,7 @@ mod tests {
             dir: Some(root.to_string_lossy().into_owned()),
             ..Default::default()
         };
-        let code = cmd_mkdir(Lang::En, &config, vec![]);
+        let code = cmd_mkdir(Lang::En, &config, vec![], None);
         assert_eq!(code, 0);
         let created: Vec<_> = std::fs::read_dir(&root)
             .unwrap()

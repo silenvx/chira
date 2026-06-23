@@ -36,7 +36,7 @@ cargo install --locked chira
 
 ### Shell integration (recommended)
 
-`chira` can move your **calling shell's working directory** to the directory you ended up in when you quit (the lf / nnn approach). A child process cannot change its parent shell's cwd directly, so `chira` writes the final directory via `--cd-file` and a shell function does the `cd`. Without this wrapper, running the bare `chira` binary cannot change your shell's directory.
+`chira` can move your **calling shell's working directory** to the directory you ended up in when you quit (the lf / nnn approach), or to the directory `chira mkdir <name>` just created. A child process cannot change its parent shell's cwd directly, so `chira` writes the target directory via `--cd-file` and a shell function does the `cd`. Without this wrapper, running the bare `chira` binary cannot change your shell's directory.
 
 Add to your shell startup file (`~/.zshrc` for zsh, `~/.bashrc` for bash):
 
@@ -69,7 +69,7 @@ end
 
 `return $rc` を最後に置くことで、`chira gc` 等の CLI サブコマンドの exit code (gc は errors > 0 で 1、引数誤りで 2) がそのまま wrapper の戻り値になる。TUI 経由で `cd` した場合も `cd` の成否ではなく chira 本体の exit code を返す。
 
-Now: launch `chira` → descend into a directory → quit with `q`, and your shell moves there. Right after, the shell's standard `cd -` takes you back to where you were (because `cd` sets `OLDPWD`).
+Now: launch `chira` → descend into a directory → quit with `q`, and your shell moves there. `chira mkdir <name>` reuses the same wrapper and immediately `cd`s you into the newly created directory. Right after, the shell's standard `cd -` takes you back to where you were (because `cd` sets `OLDPWD`).
 
 ## Storage
 

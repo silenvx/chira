@@ -99,6 +99,22 @@ Each value falls back independently when omitted. Resolution priority (high → 
 CHIRA_DIR=/tmp/other chira   # env wins over config's dir
 ```
 
+### Auto-name templates for `new` / `mkdir`
+
+`chira new` / `chira mkdir` without an argument auto-generate a name from a `chrono` `strftime` template. The defaults are `scratch-%Y%m%d-%H%M%S.md` (file) and `scratch-%Y%m%d-%H%M%S` (directory). To customize:
+
+```toml
+[new]
+name_template = "memo-%Y-%m-%d_%H%M%S.md"   # used when `chira new` is called without a name
+dir_template  = "memo-%Y-%m-%d_%H%M%S"      # used when `chira mkdir` is called without a name
+```
+
+- Any `chrono` format specifier ( https://docs.rs/chrono/latest/chrono/format/strftime/ ) is accepted; the result is the entry name on disk.
+- Leading/trailing whitespace is trimmed before use; a whitespace-only value is treated as unset.
+- Unset or empty values fall back to the built-in defaults above.
+- The TUI placeholders for `n` (new file) and `N` (new directory) use the same templates, so CLI and TUI stay in sync.
+- If a template renders to a name that fails `chira`'s safety check (empty, contains `/`, or starts with `.`), or contains a `chrono` specifier that cannot be parsed (e.g. `%Q`), a warning is printed at startup and the default is used instead.
+
 ### Editing from the TUI
 
 Inside the TUI press `,` to open the configuration screen. It lists every option with its current value and source — `(env: CHIRA_DIR)` / `(config)` / `(default)` — plus the resolution order and the absolute path the changes will be saved to. `Enter` edits the highlighted entry (`Space` toggles booleans), `s` writes the changes back to the same `config.toml` while preserving formatting and comments, and `Esc` returns to the file list. Items currently overridden by an env var are marked `⚠ env override` — the file is still updated, but the env var continues to take precedence on the next launch. Values written by the TUI take effect on the next start (the current session keeps the snapshot loaded at boot).
@@ -187,8 +203,8 @@ Running `chira` with no arguments launches the TUI. Pass a subcommand to run a o
 |---|---|---|
 | `chira ls [<path>]` | (list view) | One name per line; `-l` prints `<mtime>\t<size>\t<name>` |
 | `chira tree [<path>]` | (right pane) | Tree view (depth 4, up to 100 lines) |
-| `chira new [<name>]` | `n` | Create a file and open `$EDITOR`; `--no-edit` skips the editor. When `<name>` is omitted, defaults to `scratch-YYYYMMDD-HHMMSS.md` |
-| `chira mkdir [<name>]` | `N` | Create a directory. When `<name>` is omitted, defaults to `scratch-YYYYMMDD-HHMMSS` |
+| `chira new [<name>]` | `n` | Create a file and open `$EDITOR`; `--no-edit` skips the editor. When `<name>` is omitted, the name is generated from `[new] name_template` (default `scratch-%Y%m%d-%H%M%S.md`) |
+| `chira mkdir [<name>]` | `N` | Create a directory. When `<name>` is omitted, the name is generated from `[new] dir_template` (default `scratch-%Y%m%d-%H%M%S`) |
 | `chira edit <name>` | `e` | Open `<name>` in `$EDITOR` |
 | `chira shell [<dir>]` | `s` | Open `$SHELL` in `<dir>` (or in `CHIRA_DIR` if omitted) |
 | `chira rm <name>` | `d` | Delete; `-r` is required for directories, `-f` skips confirmation |

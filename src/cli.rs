@@ -332,8 +332,8 @@ fn cmd_new(lang: Lang, config: &Config, args: Vec<String>) -> i32 {
             }
         }
     }
-    // 既定値は app.rs:282 の TUI placeholder と手動同期 (config 化は #19)
-    let name = name.unwrap_or_else(|| Local::now().format("scratch-%Y%m%d-%H%M%S.md").to_string());
+    // TUI placeholder (app.rs:begin_input) と SSoT で揃えるため file_template() 経由で解決する
+    let name = name.unwrap_or_else(|| Local::now().format(config.new.file_template()).to_string());
     let Some(root) = resolve_root(lang, config) else {
         return 1;
     };
@@ -368,8 +368,7 @@ fn cmd_mkdir(lang: Lang, config: &Config, args: Vec<String>) -> i32 {
             }
         }
     }
-    // 既定値は app.rs:283 の TUI placeholder と手動同期 (config 化は #19)
-    let name = name.unwrap_or_else(|| Local::now().format("scratch-%Y%m%d-%H%M%S").to_string());
+    let name = name.unwrap_or_else(|| Local::now().format(config.new.dir_template()).to_string());
     let Some(root) = resolve_root(lang, config) else {
         return 1;
     };
@@ -878,6 +877,68 @@ mod tests {
                 && name.ends_with(".md")
                 && name.len() == "scratch-YYYYMMDD-HHMMSS.md".len(),
             "unexpected default name: {name}"
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// `chira new` の name 省略時、[new] name_template が設定されていれば config 値を優先する
+    #[test]
+    fn cmd_new_without_name_honors_config_template() {
+        use crate::config::NewConfig;
+        let root = temp_root();
+        let config = Config {
+            dir: Some(root.to_string_lossy().into_owned()),
+            new: NewConfig {
+                // 区切りに `_` を入れ、拡張子も `.txt` に変えて default と区別できる形にする
+                name_template: Some("memo-%Y_%m_%d.txt".into()),
+                dir_template: None,
+            },
+            ..Default::default()
+        };
+        let code = cmd_new(Lang::En, &config, vec!["--no-edit".into()]);
+        assert_eq!(code, 0);
+        let created: Vec<_> = std::fs::read_dir(&root)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(created.len(), 1, "expected one file, got {created:?}");
+        let name = &created[0];
+        assert!(
+            name.starts_with("memo-")
+                && name.ends_with(".txt")
+                && name.len() == "memo-YYYY_MM_DD.txt".len(),
+            "config template not honored: {name}"
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// `chira mkdir` の name 省略時、[new] dir_template が設定されていれば config 値を優先する
+    #[test]
+    fn cmd_mkdir_without_name_honors_config_template() {
+        use crate::config::NewConfig;
+        let root = temp_root();
+        let config = Config {
+            dir: Some(root.to_string_lossy().into_owned()),
+            new: NewConfig {
+                name_template: None,
+                dir_template: Some("workspace-%Y_%m_%d".into()),
+            },
+            ..Default::default()
+        };
+        let code = cmd_mkdir(Lang::En, &config, vec![]);
+        assert_eq!(code, 0);
+        let created: Vec<_> = std::fs::read_dir(&root)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(created.len(), 1, "expected one dir, got {created:?}");
+        let name = &created[0];
+        assert!(
+            name.starts_with("workspace-") && name.len() == "workspace-YYYY_MM_DD".len(),
+            "config template not honored: {name}"
         );
         std::fs::remove_dir_all(&root).unwrap();
     }

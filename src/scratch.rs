@@ -187,7 +187,7 @@ fn build_tree(
 
 /// name の安全性。空・`/` 含み・先頭 `.` を拒否する。
 /// 先頭 `.` 拒否は隠しファイル一覧除外との整合で、作成できるが一覧に出ないゴースト化も防ぐ。
-fn validate_name(name: &str) -> io::Result<()> {
+pub(crate) fn validate_name(name: &str) -> io::Result<()> {
     if name.is_empty() || name.contains('/') || name.starts_with('.') {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid name"));
     }

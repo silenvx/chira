@@ -123,6 +123,13 @@ pub fn err_cd_file_needs_arg(lang: Lang) -> &'static str {
     }
 }
 
+pub fn err_cd_file_write(lang: Lang, e: &dyn std::fmt::Display) -> String {
+    match lang {
+        Lang::Ja => format!("chira: --cd-file の書き出しに失敗: {e}"),
+        Lang::En => format!("chira: failed to write --cd-file: {e}"),
+    }
+}
+
 pub fn err_option_needs_arg(lang: Lang, opt: &str) -> String {
     match lang {
         Lang::Ja => format!("{opt} には引数が必要です\n"),

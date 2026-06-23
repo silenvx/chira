@@ -29,14 +29,21 @@ fn main() -> io::Result<()> {
     let argv: Vec<String> = env::args().skip(1).collect();
 
     // README wrapper が `--cd-file <tmp>` を前置するため、argv 中の最初の非フラグが subcommand なら CLI ディスパッチ。
-    // CLI モードでは --cd-file は無視する (wrapper の cd は empty file で no-op になる)。
+    // CLI モードでも `chira mkdir` 等は作成 dir を cd_file へ書き出し、wrapper の cd フローに乗せる。
     if let Some(sub_idx) = first_non_flag_index(&argv) {
         let first = &argv[sub_idx];
         if cli::is_subcommand(first) {
+            let cd_file = match extract_cd_file_prefix(&argv[..sub_idx], lang) {
+                Ok(v) => v,
+                Err(msg) => {
+                    eprint!("{msg}");
+                    std::process::exit(2);
+                }
+            };
             let sub = first.clone();
             let sub_args = argv[sub_idx + 1..].to_vec();
             let config = config::load(lang);
-            let code = cli::run(lang, &config, &sub, sub_args);
+            let code = cli::run(lang, &config, &sub, sub_args, cd_file.as_deref());
             std::process::exit(code);
         } else {
             eprint!("{}", i18n::err_unknown_arg(lang, first));
@@ -130,6 +137,25 @@ fn first_non_flag_index(argv: &[String]) -> Option<usize> {
         }
     }
     None
+}
+
+/// CLI dispatch 前の prefix から `--cd-file` 値を取り出す。
+/// `first_non_flag_index` が `--cd-file` 以外のフラグで諦める契約のため、ここに来る prefix は
+/// `--cd-file` 系のみで構成される (それ以外は呼ばれない)。
+fn extract_cd_file_prefix(prefix: &[String], lang: i18n::Lang) -> Result<Option<PathBuf>, String> {
+    let mut cd_file = None;
+    let mut iter = prefix.iter();
+    while let Some(arg) = iter.next() {
+        if arg == "--cd-file" {
+            let path = iter
+                .next()
+                .ok_or_else(|| i18n::err_cd_file_needs_arg(lang).to_string())?;
+            cd_file = Some(PathBuf::from(path));
+        } else if let Some(path) = arg.strip_prefix("--cd-file=") {
+            cd_file = Some(PathBuf::from(path));
+        }
+    }
+    Ok(cd_file)
 }
 
 /// `--cd-file <path>` を取り出す。`--help` / `--version` は表示して終了する。
@@ -237,6 +263,21 @@ mod tests {
 
     fn args(v: &[&str]) -> Vec<String> {
         v.iter().map(|s| (*s).into()).collect()
+    }
+
+    #[test]
+    fn extract_cd_file_prefix_handles_separate_and_eq_forms() {
+        let l = i18n::Lang::En;
+        assert_eq!(extract_cd_file_prefix(&args(&[]), l).unwrap(), None);
+        assert_eq!(
+            extract_cd_file_prefix(&args(&["--cd-file", "/tmp/x"]), l).unwrap(),
+            Some(PathBuf::from("/tmp/x"))
+        );
+        assert_eq!(
+            extract_cd_file_prefix(&args(&["--cd-file=/tmp/y"]), l).unwrap(),
+            Some(PathBuf::from("/tmp/y"))
+        );
+        assert!(extract_cd_file_prefix(&args(&["--cd-file"]), l).is_err());
     }
 
     #[test]

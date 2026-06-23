@@ -147,8 +147,11 @@ fn extract_cd_file_prefix(prefix: &[String], lang: i18n::Lang) -> Result<Option<
     let mut iter = prefix.iter();
     while let Some(arg) = iter.next() {
         if arg == "--cd-file" {
+            // 次トークンが `-` 始まりなら値欠落として扱う (`--cd-file --bogus mkdir ws` で
+            // `--bogus` を path として吸収し ./--bogus ファイルを書き出す副作用を防ぐ)
             let path = iter
                 .next()
+                .filter(|p| !p.starts_with('-'))
                 .ok_or_else(|| i18n::err_cd_file_needs_arg(lang).to_string())?;
             cd_file = Some(PathBuf::from(path));
         } else if let Some(path) = arg.strip_prefix("--cd-file=") {
@@ -278,6 +281,9 @@ mod tests {
             Some(PathBuf::from("/tmp/y"))
         );
         assert!(extract_cd_file_prefix(&args(&["--cd-file"]), l).is_err());
+        // `--cd-file --bogus` は値欠落扱い (`--bogus` を path として吸収すると現 cwd に
+        // 意図しないファイルを書き出す副作用が生じる)
+        assert!(extract_cd_file_prefix(&args(&["--cd-file", "--bogus"]), l).is_err());
     }
 
     #[test]

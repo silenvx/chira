@@ -44,7 +44,7 @@ Add to your shell startup file (`~/.zshrc` for zsh, `~/.bashrc` for bash):
 chira() {
   local tmp; tmp="$(mktemp)" || return
   command chira --cd-file "$tmp" "$@"
-  # zsh treats $status as a read-only special variable (an alias for $?), so use a different name
+  # In zsh, $status is a special parameter (alias for $?) that cannot be declared with `local`, so use a different name
   local rc=$?
   local dir; dir="$(cat "$tmp")"
   rm -f "$tmp"
@@ -67,7 +67,7 @@ function chira
 end
 ```
 
-The trailing `return $rc` propagates the exit code of CLI subcommands like `chira gc` (1 when errors > 0, 2 on argument errors) straight through as the wrapper's return value. Even when `cd` is performed via the TUI, the wrapper returns chira's own exit code, not the success/failure of `cd`.
+The trailing `return $rc` (or `return $cmd_status` in fish) propagates the exit code of CLI subcommands like `chira gc` (1 when errors > 0, 2 on argument errors) straight through as the wrapper's return value. Even when `cd` is performed via the TUI, the wrapper returns chira's own exit code, not the success/failure of `cd`.
 
 Now: launch `chira` → descend into a directory → quit with `q`, and your shell moves there. `chira mkdir <name>` reuses the same wrapper and immediately `cd`s you into the newly created directory. Right after, the shell's standard `cd -` takes you back to where you were (because `cd` sets `OLDPWD`).
 

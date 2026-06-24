@@ -14,7 +14,8 @@ use crate::i18n::{self, Lang};
 use crate::scratch::{self, Entry};
 
 const SUBCOMMANDS: &[&str] = &[
-    "ls", "tree", "new", "mkdir", "edit", "shell", "rm", "mv", "path", "find", "gc", "archive",
+    "ls", "tree", "new", "mkdir", "md", "edit", "shell", "rm", "mv", "path", "find", "gc",
+    "archive",
 ];
 
 pub fn is_subcommand(s: &str) -> bool {
@@ -40,7 +41,7 @@ pub fn run(
         "ls" => cmd_ls(lang, config, args),
         "tree" => cmd_tree(lang, config, args),
         "new" => cmd_new(lang, config, args),
-        "mkdir" => cmd_mkdir(lang, config, args, cd_file),
+        "mkdir" | "md" => cmd_mkdir(lang, config, args, cd_file),
         "edit" => cmd_edit(lang, config, args),
         "shell" => cmd_shell(lang, config, args),
         "rm" => cmd_rm(lang, config, args),
@@ -764,7 +765,7 @@ mod tests {
     #[test]
     fn is_subcommand_matches_known() {
         for s in [
-            "ls", "tree", "new", "mkdir", "edit", "shell", "rm", "mv", "path", "find", "gc",
+            "ls", "tree", "new", "mkdir", "md", "edit", "shell", "rm", "mv", "path", "find", "gc",
             "archive",
         ] {
             assert!(is_subcommand(s), "expected {s} to be a subcommand");
